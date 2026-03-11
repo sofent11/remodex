@@ -29,9 +29,11 @@ extension CodexService {
             params: params,
             includeJSONRPC: false
         )
+        let requestContext = pendingRequestContext(method: method, params: params)
 
         return try await withCheckedThrowingContinuation { continuation in
             pendingRequests[requestKey] = continuation
+            pendingRequestContexts[requestKey] = requestContext
             pendingRequestTimeoutTasks[requestKey] = Task { @MainActor [weak self] in
                 guard let self else { return }
                 try? await Task.sleep(nanoseconds: requestTimeoutNanoseconds)
@@ -39,10 +41,12 @@ extension CodexService {
 
                 guard let pendingContinuation = pendingRequests.removeValue(forKey: requestKey) else {
                     pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
+                    pendingRequestContexts.removeValue(forKey: requestKey)
                     return
                 }
 
                 pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
+                pendingRequestContexts.removeValue(forKey: requestKey)
                 pendingContinuation.resume(
                     throwing: CodexServiceError.invalidInput(
                         "The Mac bridge did not respond in time. Reconnect and try again."
@@ -55,6 +59,7 @@ extension CodexService {
                     try await sendMessage(request)
                 } catch {
                     pendingRequestTimeoutTasks.removeValue(forKey: requestKey)?.cancel()
+                    pendingRequestContexts.removeValue(forKey: requestKey)
                     // Avoid double-resume if the request was already completed
                     // (for example by a disconnect race that fails all pending requests).
                     if let pendingContinuation = pendingRequests.removeValue(forKey: requestKey) {
@@ -251,6 +256,7 @@ extension CodexService {
     func failAllPendingRequests(with error: Error) {
         let timeoutTasks = pendingRequestTimeoutTasks
         pendingRequestTimeoutTasks.removeAll()
+        pendingRequestContexts.removeAll()
         let continuations = pendingRequests
         pendingRequests.removeAll()
 
@@ -259,6 +265,56 @@ extension CodexService {
         }
         for continuation in continuations.values {
             continuation.resume(throwing: error)
+        }
+    }
+
+    func pendingRequestContext(method: String, params: JSONValue?) -> CodexPendingRequestContext {
+        let paramsObject = params?.objectValue
+        let threadId = paramsObject?["threadId"]?.stringValue
+            ?? paramsObject?["thread_id"]?.stringValue
+
+        return CodexPendingRequestContext(
+            method: method,
+            threadId: threadId,
+            createdAt: Date()
+        )
+    }
+
+    func completePendingTurnStartIfNeeded(threadId: String, turnId: String?) {
+        let matchingEntry = pendingRequestContexts
+            .filter { _, context in
+                context.method == "turn/start" && context.threadId == threadId
+            }
+            .min { lhs, rhs in
+                lhs.value.createdAt < rhs.value.createdAt
+            }
+
+        guard let requestKey = matchingEntry?.key,
+              let continuation = pendingRequests.removeValue(forKey: requestKey) else {
+            if lastErrorMessage == "The Mac bridge did not respond in time. Reconnect and try again." {
+                lastErrorMessage = nil
+            }
+            return
+        }
+
+        pendingRequestTimeoutTasks.removeValue(forKey: requestKey)?.cancel()
+        pendingRequestContexts.removeValue(forKey: requestKey)
+
+        var result: RPCObject = ["threadId": .string(threadId)]
+        if let turnId,
+           !turnId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            result["turnId"] = .string(turnId)
+        }
+
+        continuation.resume(
+            returning: RPCMessage(
+                id: responseID(from: requestKey),
+                result: .object(result),
+                includeJSONRPC: false
+            )
+        )
+        if lastErrorMessage == "The Mac bridge did not respond in time. Reconnect and try again." {
+            lastErrorMessage = nil
         }
     }
 
@@ -277,5 +333,21 @@ extension CodexService {
         case .object, .array:
             return "complex:\(String(describing: id))"
         }
+    }
+
+    func responseID(from requestKey: String) -> JSONValue {
+        if requestKey.hasPrefix("s:") {
+            return .string(String(requestKey.dropFirst(2)))
+        }
+        if requestKey.hasPrefix("i:"), let value = Int(String(requestKey.dropFirst(2))) {
+            return .integer(value)
+        }
+        if requestKey.hasPrefix("d:"), let value = Double(String(requestKey.dropFirst(2))) {
+            return .double(value)
+        }
+        if requestKey.hasPrefix("b:") {
+            return .bool(String(requestKey.dropFirst(2)) == "true")
+        }
+        return .string(requestKey)
     }
 }

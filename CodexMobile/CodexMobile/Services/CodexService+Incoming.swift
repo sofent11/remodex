@@ -48,6 +48,7 @@ extension CodexService {
             return
         }
         pendingRequestTimeoutTasks.removeValue(forKey: requestKey)?.cancel()
+        pendingRequestContexts.removeValue(forKey: requestKey)
 
         if let rpcError = message.error {
             continuation.resume(throwing: CodexServiceError.rpcError(rpcError))
@@ -398,6 +399,7 @@ extension CodexService {
 
         if let threadId {
             markThreadAsRunning(threadId)
+            completePendingTurnStartIfNeeded(threadId: threadId, turnId: turnID)
         }
 
         if let threadId, let turnID {
