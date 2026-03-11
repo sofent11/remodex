@@ -35,12 +35,27 @@ final class ContentViewModel {
     }
 
     // Connects to the local/tailnet bridge using a scanned QR code payload.
-    func connectToBridge(pairingPayload: CodexPairingQRPayload, codex: CodexService) async {
+    func connectToBridge(
+        pairingPayload: CodexPairingQRPayload,
+        codex: CodexService,
+        preferredTransportURL: String? = nil
+    ) async {
         await stopAutoReconnectForManualScan(codex: codex)
         codex.rememberBridgePairing(pairingPayload)
 
         do {
-            try await connectUsingSavedPairing(codex: codex, performAutoRetry: true)
+            if let preferredTransportURL = preferredTransportURL?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !preferredTransportURL.isEmpty {
+                try await connectWithAutoRecovery(
+                    codex: codex,
+                    serverURL: preferredTransportURL,
+                    performAutoRetry: true
+                )
+                codex.rememberSuccessfulTransportURL(preferredTransportURL)
+            } else {
+                try await connectUsingSavedPairing(codex: codex, performAutoRetry: true)
+            }
         } catch {
             if codex.lastErrorMessage?.isEmpty ?? true {
                 codex.lastErrorMessage = codex.userFacingConnectFailureMessage(error)

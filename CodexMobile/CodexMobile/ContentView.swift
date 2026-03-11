@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var isShowingManualScanner = false
     @State private var isSearchActive = false
+    @State private var pendingTransportSelection: PendingTransportSelection?
     @AppStorage("codex.hasSeenOnboarding") private var hasSeenOnboarding = false
 
     private let sidebarWidth: CGFloat = 330
@@ -94,6 +95,26 @@ struct ContentView: View {
                 }
                 isShowingManualScanner = false
             }
+            .sheet(item: $pendingTransportSelection) { selection in
+                TransportSelectionView(
+                    pairingPayload: selection.pairingPayload,
+                    onSelect: { candidate in
+                        pendingTransportSelection = nil
+                        isShowingManualScanner = false
+                        Task {
+                            await viewModel.connectToBridge(
+                                pairingPayload: selection.pairingPayload,
+                                codex: codex,
+                                preferredTransportURL: candidate.url
+                            )
+                        }
+                    },
+                    onCancel: {
+                        pendingTransportSelection = nil
+                    }
+                )
+                .presentationDetents([.medium, .large])
+            }
     }
 
     @ViewBuilder
@@ -113,11 +134,21 @@ struct ContentView: View {
 
     private var qrScannerBody: some View {
         QRScannerView { pairingPayload in
+            let usableCandidates = pairingPayload.transportCandidates.filter { candidate in
+                !candidate.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+
+            if usableCandidates.count > 1 {
+                pendingTransportSelection = PendingTransportSelection(pairingPayload: pairingPayload)
+                return
+            }
+
             Task {
                 isShowingManualScanner = false
                 await viewModel.connectToBridge(
                     pairingPayload: pairingPayload,
-                    codex: codex
+                    codex: codex,
+                    preferredTransportURL: usableCandidates.first?.url
                 )
             }
         }
@@ -356,6 +387,59 @@ struct ContentView: View {
            let first = threads.first {
             selectedThread = first
         }
+    }
+}
+
+private struct PendingTransportSelection: Identifiable {
+    let pairingPayload: CodexPairingQRPayload
+    let id = UUID()
+}
+
+private struct TransportSelectionView: View {
+    let pairingPayload: CodexPairingQRPayload
+    let onSelect: (CodexTransportCandidate) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List(pairingPayload.transportCandidates, id: \.self) { candidate in
+                Button {
+                    onSelect(candidate)
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(candidateDisplayTitle(candidate))
+                            .font(AppFont.body(weight: .semibold))
+                            .foregroundStyle(.primary)
+
+                        Text(candidate.url)
+                            .font(AppFont.footnote())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(3)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            }
+            .navigationTitle("Choose Connection")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        onCancel()
+                    }
+                }
+            }
+        }
+    }
+
+    private func candidateDisplayTitle(_ candidate: CodexTransportCandidate) -> String {
+        if let label = candidate.label?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !label.isEmpty {
+            return "\(label) (\(candidate.kind))"
+        }
+        return candidate.kind
     }
 }
 
