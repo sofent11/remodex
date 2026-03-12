@@ -38,11 +38,14 @@ fun SidebarScreen(
     onArchiveThread: (String) -> Unit,
     onUnarchiveThread: (String) -> Unit,
     onRenameThread: (String, String) -> Unit,
+    onSearchActiveChanged: (Boolean) -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    var isSearchActive by rememberSaveable { mutableStateOf(false) }
     var showProjectPicker by rememberSaveable { mutableStateOf(false) }
     var threadPendingRename by remember { mutableStateOf<ThreadSummary?>(null) }
     var threadPendingDeletion by remember { mutableStateOf<ThreadSummary?>(null) }
+    var threadPendingArchiveToggle by remember { mutableStateOf<ThreadSummary?>(null) }
 
     val groups = remember(state.threads, query) {
         buildSidebarThreadGroups(state.threads, query)
@@ -63,6 +66,10 @@ fun SidebarScreen(
         SidebarSearchField(
             value = query,
             onValueChange = { query = it },
+            onActiveChange = { isActive ->
+                isSearchActive = isActive
+                onSearchActiveChanged(isActive)
+            },
         )
         SidebarNewChatButton(
             enabled = state.isConnected,
@@ -83,14 +90,11 @@ fun SidebarScreen(
             onRequestRenameThread = { threadPendingRename = it },
             onRequestDeleteThread = { threadPendingDeletion = it },
             onArchiveToggleThread = { thread ->
-                if (thread.syncState == ThreadSyncState.LIVE) {
-                    onArchiveThread(thread.id)
-                } else {
-                    onUnarchiveThread(thread.id)
-                }
+                threadPendingArchiveToggle = thread
             },
             isFiltering = query.isNotBlank(),
             isConnected = state.isConnected,
+            isSearchActive = isSearchActive,
         )
         SidebarFloatingSettingsButton(onClick = onOpenSettings)
     }
@@ -159,6 +163,44 @@ fun SidebarScreen(
             },
             dismissButton = {
                 TextButton(onClick = { threadPendingDeletion = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    threadPendingArchiveToggle?.let { thread ->
+        val isArchiving = thread.syncState == ThreadSyncState.LIVE
+        AlertDialog(
+            onDismissRequest = { threadPendingArchiveToggle = null },
+            title = {
+                Text(if (isArchiving) "Archive Chat" else "Unarchive Chat")
+            },
+            text = {
+                Text(
+                    if (isArchiving) {
+                        "Archive \"${thread.displayTitle}\"?"
+                    } else {
+                        "Unarchive \"${thread.displayTitle}\"?"
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (isArchiving) {
+                            onArchiveThread(thread.id)
+                        } else {
+                            onUnarchiveThread(thread.id)
+                        }
+                        threadPendingArchiveToggle = null
+                    },
+                ) {
+                    Text(if (isArchiving) "Archive" else "Unarchive")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { threadPendingArchiveToggle = null }) {
                     Text("Cancel")
                 }
             },

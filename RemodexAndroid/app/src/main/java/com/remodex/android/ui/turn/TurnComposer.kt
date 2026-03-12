@@ -21,6 +21,7 @@ fun TurnComposer(
     onSelectAccessMode: (AccessMode) -> Unit,
     viewModel: AppViewModel,
 ) {
+    val turnViewModel = rememberTurnViewModel(state.selectedThreadId)
     TurnComposerHost(
         state = state,
         input = input,
@@ -32,6 +33,7 @@ fun TurnComposer(
         onSelectModel = onSelectModel,
         onSelectReasoning = onSelectReasoning,
         onSelectAccessMode = onSelectAccessMode,
+        turnViewModel = turnViewModel,
         viewModel = viewModel,
     )
 }

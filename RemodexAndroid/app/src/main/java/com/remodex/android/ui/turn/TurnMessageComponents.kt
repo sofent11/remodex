@@ -1,5 +1,8 @@
 package com.remodex.android.ui.turn
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import com.remodex.android.data.model.ChatMessage
 import com.remodex.android.data.model.MessageKind
 import com.remodex.android.data.model.MessageRole
+import androidx.compose.ui.platform.LocalContext
 import com.remodex.android.ui.shared.StatusTag
 import com.remodex.android.ui.theme.Border
 import com.remodex.android.ui.theme.CommandAccent
@@ -44,6 +49,7 @@ internal fun TurnMessageBubble(
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
     grouped: Boolean = false,
     replyPresentation: ReplyPresentation? = null,
+    copyBlockText: String? = null,
 ) {
     when {
         message.role == MessageRole.USER -> {
@@ -58,23 +64,39 @@ internal fun TurnMessageBubble(
         }
 
         message.role == MessageRole.ASSISTANT && message.kind == MessageKind.CHAT -> {
-            ConversationBubble(
-                message = message,
-                alignment = Alignment.CenterStart,
-                background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
-                contentColor = MaterialTheme.colorScheme.onSurface,
-                fillFraction = if (grouped) 1f else 0.92f,
-                shape = RoundedCornerShape(20.dp),
-                tonalElevation = 0.dp,
-                replyPresentation = replyPresentation,
-            )
+            NonUserMessageBlock(copyBlockText = copyBlockText) {
+                ConversationBubble(
+                    message = message,
+                    alignment = Alignment.CenterStart,
+                    background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    fillFraction = if (grouped) 1f else 0.92f,
+                    shape = RoundedCornerShape(20.dp),
+                    tonalElevation = 0.dp,
+                    replyPresentation = replyPresentation,
+                )
+            }
         }
 
         else -> SystemMessageCard(
             message = message,
             onSubmitStructuredInput = onSubmitStructuredInput,
             grouped = grouped,
+            copyBlockText = copyBlockText,
         )
+    }
+}
+
+@Composable
+private fun NonUserMessageBlock(
+    copyBlockText: String?,
+    content: @Composable () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        content()
+        copyBlockText?.let { text ->
+            CopyBlockButton(text = text)
+        }
     }
 }
 
@@ -159,50 +181,71 @@ private fun SystemMessageCard(
     message: ChatMessage,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
     grouped: Boolean = false,
+    copyBlockText: String? = null,
 ) {
     val accent = systemAccentColor(message.kind)
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Border),
-            modifier = Modifier.fillMaxWidth(if (grouped) 1f else 0.94f),
+    NonUserMessageBlock(copyBlockText = copyBlockText) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.CenterStart,
         ) {
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    if (message.isStreaming) {
-                        PulsingDot(color = accent)
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(accent, CircleShape),
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Border),
+                modifier = Modifier.fillMaxWidth(if (grouped) 1f else 0.94f),
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (message.isStreaming) {
+                            PulsingDot(color = accent)
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(accent, CircleShape),
+                            )
+                        }
+                        Text(
+                            text = systemMessageTitle(message.kind),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Text(
-                        text = systemMessageTitle(message.kind),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
-                when (message.kind) {
-                    MessageKind.THINKING -> ThinkingMessageContent(message)
-                    MessageKind.FILE_CHANGE -> FileChangeMessageContent(message)
-                    MessageKind.COMMAND_EXECUTION -> CommandExecutionMessageContent(message)
-                    MessageKind.PLAN -> PlanMessageContent(message)
-                    MessageKind.USER_INPUT_PROMPT -> UserInputPromptMessageContent(message, onSubmitStructuredInput)
-                    MessageKind.CHAT -> DefaultSystemMessageContent(message)
+                    Spacer(Modifier.height(12.dp))
+                    when (message.kind) {
+                        MessageKind.THINKING -> ThinkingMessageContent(message)
+                        MessageKind.FILE_CHANGE -> FileChangeMessageContent(message)
+                        MessageKind.COMMAND_EXECUTION -> CommandExecutionMessageContent(message)
+                        MessageKind.PLAN -> PlanMessageContent(message)
+                        MessageKind.USER_INPUT_PROMPT -> UserInputPromptMessageContent(message, onSubmitStructuredInput)
+                        MessageKind.CHAT -> DefaultSystemMessageContent(message)
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CopyBlockButton(text: String) {
+    val context = LocalContext.current
+    var copied by remember(text) { mutableStateOf(false) }
+    TextButton(
+        onClick = {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("assistant-block", text))
+            copied = true
+        },
+    ) {
+        Text(
+            text = if (copied) "Copied" else "Copy",
+            style = MaterialTheme.typography.labelMedium,
+        )
     }
 }
 

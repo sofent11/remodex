@@ -80,6 +80,7 @@ fun TurnScreen(
     viewModel: AppViewModel,
 ) {
     val thread = state.selectedThread ?: return
+    val turnViewModel = rememberTurnViewModel(thread.id)
     val messages = remember(state.messagesByThread, thread.id) {
         projectTimelineMessages(
             state.messagesByThread[thread.id].orEmpty().sortedBy(ChatMessage::orderIndex),
@@ -96,6 +97,8 @@ fun TurnScreen(
         messages = messages,
         renderItems = renderItems,
         isRunning = isRunning,
+        activeTurnId = state.activeTurnIdByThread[thread.id],
+        turnViewModel = turnViewModel,
         pendingApproval = pendingApproval,
         onInputChanged = onInputChanged,
         onSend = onSend,

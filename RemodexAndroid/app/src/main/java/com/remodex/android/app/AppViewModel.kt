@@ -28,6 +28,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun importPairingPayload(rawText: String) = repository.importPairingPayload(rawText)
 
+    fun confirmPendingPairingTransport(macDeviceId: String, url: String) =
+        repository.confirmPendingPairingTransport(macDeviceId, url)
+
     fun connectActivePairing() = repository.connectActivePairing()
 
     fun disconnect() = repository.disconnect()
@@ -81,6 +84,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun gitStatus(cwd: String) = repository.gitStatus(cwd)
 
     suspend fun gitCommit(cwd: String, message: String) = repository.gitCommit(cwd, message)
+
+    suspend fun gitDiff(cwd: String) = repository.gitDiff(cwd)
 
     suspend fun performGitAction(cwd: String, action: com.remodex.android.data.model.TurnGitActionKind) = repository.performGitAction(cwd, action)
 }

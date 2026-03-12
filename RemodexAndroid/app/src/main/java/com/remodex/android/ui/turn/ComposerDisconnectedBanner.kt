@@ -38,7 +38,10 @@ internal fun ComposerDisconnectedBanner(
                 )
             }
             if (state.activePairing != null) {
-                TextButton(onClick = onReconnect) {
+                TextButton(
+                    onClick = onReconnect,
+                    enabled = state.connectionPhase != ConnectionPhase.CONNECTING,
+                ) {
                     Text(
                         text = if (state.connectionPhase == ConnectionPhase.CONNECTING) "Reconnecting..." else "Reconnect",
                     )

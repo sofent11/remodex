@@ -411,6 +411,7 @@ data class AppState(
     val pendingApproval: ApprovalRequest? = null,
     val lastErrorMessage: String? = null,
     val importText: String = "",
+    val pendingTransportSelectionMacDeviceId: String? = null,
     val gitRepoSyncByThread: Map<String, GitRepoSyncResult> = emptyMap(),
     val contextWindowUsageByThread: Map<String, ContextWindowUsage> = emptyMap(),
     val queuedTurnDraftsByThread: Map<String, List<QueuedTurnDraft>> = emptyMap(),
@@ -430,6 +431,11 @@ data class AppState(
 
     val contextWindowUsage: ContextWindowUsage?
         get() = selectedThreadId?.let(contextWindowUsageByThread::get)
+
+    val pendingTransportSelectionPairing: PairingRecord?
+        get() = pendingTransportSelectionMacDeviceId?.let { macDeviceId ->
+            pairings.firstOrNull { it.macDeviceId == macDeviceId }
+        }
 }
 
 fun JsonObject.string(key: String): String? = this[key].stringOrNull()
@@ -510,16 +516,29 @@ data class GitRepoSyncResult(
     val unpushedCount: Int = 0,
     val unpulledCount: Int = 0,
     val untrackedCount: Int = 0,
-    val repoRoot: String? = null
+    val repoRoot: String? = null,
+    val state: String = "up_to_date",
+    val canPush: Boolean = false,
+    val repoDiffTotals: GitDiffTotals? = null,
 )
 
 enum class TurnGitActionKind(val title: String) {
-    SYNC_NOW("Update"),
+    SYNC_NOW("Sync"),
     COMMIT("Commit"),
     PUSH("Push"),
     COMMIT_AND_PUSH("Commit & Push"),
     CREATE_PR("Create PR"),
-    DISCARD_LOCAL_CHANGES("Discard Local Changes")
+    DISCARD_LOCAL_CHANGES("Discard Runtime Changes & Sync")
+}
+
+@Serializable
+data class GitDiffTotals(
+    val additions: Int,
+    val deletions: Int,
+    val binaryFiles: Int = 0,
+) {
+    val hasChanges: Boolean
+        get() = additions > 0 || deletions > 0 || binaryFiles > 0
 }
 
 @Serializable

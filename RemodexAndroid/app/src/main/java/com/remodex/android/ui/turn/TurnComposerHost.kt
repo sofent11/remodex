@@ -31,6 +31,7 @@ internal fun TurnComposerHost(
     onSelectModel: (String?) -> Unit,
     onSelectReasoning: (String?) -> Unit,
     onSelectAccessMode: (AccessMode) -> Unit,
+    turnViewModel: TurnViewModel,
     viewModel: AppViewModel,
 ) {
     val context = LocalContext.current
@@ -38,7 +39,6 @@ internal fun TurnComposerHost(
         context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     }
     val coroutineScope = rememberCoroutineScope()
-    val turnViewModel = rememberTurnViewModel(state.selectedThreadId)
     val selectedModel = remember(state.availableModels, state.selectedModelId) {
         resolveSelectedModelOption(state)
     }

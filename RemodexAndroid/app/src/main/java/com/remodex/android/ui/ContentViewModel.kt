@@ -41,7 +41,11 @@ internal class ContentViewModel {
     }
 
     fun shouldAttemptAutoConnect(state: AppState): Boolean {
-        if (hasAttemptedInitialAutoConnect || state.pairings.isEmpty() || state.isConnected) {
+        if (hasAttemptedInitialAutoConnect ||
+            state.pairings.isEmpty() ||
+            state.isConnected ||
+            state.pendingTransportSelectionMacDeviceId != null
+        ) {
             return false
         }
         hasAttemptedInitialAutoConnect = true
@@ -51,6 +55,7 @@ internal class ContentViewModel {
     fun shouldAttemptForegroundReconnect(state: AppState): Boolean {
         return state.pairings.isNotEmpty() &&
             !state.isConnected &&
+            state.pendingTransportSelectionMacDeviceId == null &&
             !showSettings &&
             !showPairingEntry
     }
@@ -116,6 +121,9 @@ internal class ContentViewModel {
         }
         if (state.lastErrorMessage != null) {
             pendingPairingDismiss = false
+            return false
+        }
+        if (state.pendingTransportSelectionMacDeviceId != null) {
             return false
         }
         if (state.connectionPhase != pairingEntryBaselinePhase || state.activePairingMacDeviceId != null) {

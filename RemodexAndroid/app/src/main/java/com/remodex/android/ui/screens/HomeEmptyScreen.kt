@@ -29,7 +29,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -43,6 +47,7 @@ import com.remodex.android.data.model.ConnectionPhase
 import com.remodex.android.ui.theme.CommandAccent
 import com.remodex.android.ui.theme.Danger
 import com.remodex.android.ui.theme.PlanAccent
+import kotlinx.coroutines.delay
 
 @Composable
 fun HomeEmptyScreen(
@@ -50,6 +55,35 @@ fun HomeEmptyScreen(
     onToggleConnection: () -> Unit,
     onOpenPairing: () -> Unit,
 ) {
+    var showStillConnecting by remember(state.connectionPhase) { mutableStateOf(false) }
+
+    LaunchedEffect(state.connectionPhase) {
+        showStillConnecting = false
+        if (state.connectionPhase == ConnectionPhase.CONNECTING) {
+            delay(12_000L)
+            showStillConnecting = true
+        } else {
+            showStillConnecting = false
+        }
+    }
+
+    val statusLabel = when {
+        state.connectionPhase == ConnectionPhase.CONNECTING && showStillConnecting -> "Still connecting..."
+        else -> connectionStatusText(state.connectionPhase)
+    }
+    val securityLabel = state.secureConnectionState.statusLabel
+    val buttonLabel = when (state.connectionPhase) {
+        ConnectionPhase.CONNECTING -> "Reconnecting..."
+        ConnectionPhase.LOADING_CHATS -> "Loading chats..."
+        ConnectionPhase.SYNCING -> "Syncing..."
+        ConnectionPhase.CONNECTED -> "Disconnect"
+        ConnectionPhase.OFFLINE -> "Reconnect"
+    }
+    val isConnectionActionInFlight = when (state.connectionPhase) {
+        ConnectionPhase.CONNECTING, ConnectionPhase.LOADING_CHATS, ConnectionPhase.SYNCING -> true
+        ConnectionPhase.CONNECTED, ConnectionPhase.OFFLINE -> false
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -66,9 +100,19 @@ fun HomeEmptyScreen(
         )
         Spacer(Modifier.height(24.dp))
         
-        ConnectionBadge(phase = state.connectionPhase)
+        ConnectionBadge(
+            phase = state.connectionPhase,
+            label = statusLabel,
+        )
 
         Spacer(Modifier.height(16.dp))
+        Text(
+            text = securityLabel,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(10.dp))
         state.secureMacFingerprint?.let { fingerprint ->
             Text(
                 text = "Trusted Mac: $fingerprint",
@@ -81,19 +125,11 @@ fun HomeEmptyScreen(
 
         Button(
             onClick = onToggleConnection,
-            enabled = state.connectionPhase != ConnectionPhase.CONNECTING,
+            enabled = !isConnectionActionInFlight,
             shape = RoundedCornerShape(18.dp),
             modifier = Modifier.fillMaxWidth(0.78f),
         ) {
-            Text(
-                when {
-                    state.isConnected -> "Disconnect"
-                    state.connectionPhase == ConnectionPhase.CONNECTING -> "Connecting..."
-                    state.connectionPhase == ConnectionPhase.LOADING_CHATS -> "Loading chats..."
-                    state.connectionPhase == ConnectionPhase.SYNCING -> "Syncing..."
-                    else -> "Reconnect"
-                },
-            )
+            Text(buttonLabel)
         }
         
         Spacer(Modifier.height(10.dp))
@@ -121,12 +157,18 @@ fun HomeEmptyScreen(
 
 @Composable
 private fun ConnectionBadge(phase: ConnectionPhase) {
-    val (dotColor, text) = when (phase) {
-        ConnectionPhase.CONNECTING -> PlanAccent to "Connecting"
-        ConnectionPhase.LOADING_CHATS -> PlanAccent to "Loading chats"
-        ConnectionPhase.SYNCING -> PlanAccent to "Syncing"
-        ConnectionPhase.CONNECTED -> CommandAccent to "Connected"
-        ConnectionPhase.OFFLINE -> MaterialTheme.colorScheme.tertiary to "Offline"
+    ConnectionBadge(phase = phase, label = connectionStatusText(phase))
+}
+
+@Composable
+private fun ConnectionBadge(
+    phase: ConnectionPhase,
+    label: String,
+) {
+    val dotColor = when (phase) {
+        ConnectionPhase.CONNECTING, ConnectionPhase.LOADING_CHATS, ConnectionPhase.SYNCING -> PlanAccent
+        ConnectionPhase.CONNECTED -> CommandAccent
+        ConnectionPhase.OFFLINE -> MaterialTheme.colorScheme.tertiary
     }
 
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -160,10 +202,20 @@ private fun ConnectionBadge(phase: ConnectionPhase) {
                     .background(dotColor, CircleShape)
             )
             Text(
-                text = text,
+                text = label,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+private fun connectionStatusText(phase: ConnectionPhase): String {
+    return when (phase) {
+        ConnectionPhase.CONNECTING -> "Connecting"
+        ConnectionPhase.LOADING_CHATS -> "Loading chats"
+        ConnectionPhase.SYNCING -> "Syncing"
+        ConnectionPhase.CONNECTED -> "Connected"
+        ConnectionPhase.OFFLINE -> "Offline"
     }
 }

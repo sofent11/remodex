@@ -2,6 +2,8 @@ package com.remodex.android.ui.turn
 
 import com.remodex.android.data.model.CodexImageAttachment
 import com.remodex.android.data.model.FuzzyFileMatch
+import com.remodex.android.data.model.ChatMessage
+import com.remodex.android.data.model.MessageRole
 import com.remodex.android.data.model.SkillMetadata
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -321,6 +323,81 @@ class TurnViewModelTest {
         }
 
         assertEquals(null, viewModel.steeringDraftId)
+    }
+
+    @Test
+    fun requestAssistantResponseAnchorArmsTimelineAnchor() {
+        val viewModel = TurnViewModel()
+
+        viewModel.requestAssistantResponseAnchor()
+
+        assertTrue(viewModel.shouldAnchorToAssistantResponse)
+    }
+
+    @Test
+    fun buildCopyBlockTextByMessageIdHidesLatestRunningBlock() {
+        val result = buildCopyBlockTextByMessageId(
+            messages = listOf(
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.USER,
+                    text = "question",
+                    orderIndex = 1,
+                ),
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.ASSISTANT,
+                    text = "draft reply",
+                    turnId = "turn-live",
+                    orderIndex = 2,
+                ),
+            ),
+            activeTurnId = "turn-live",
+            isThreadRunning = true,
+        )
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun buildCopyBlockTextByMessageIdShowsCompletedEarlierBlock() {
+        val earlierAssistant = ChatMessage(
+            id = "assistant-1",
+            threadId = "thread-1",
+            role = MessageRole.ASSISTANT,
+            text = "stable reply",
+            turnId = "turn-old",
+            orderIndex = 2,
+        )
+
+        val result = buildCopyBlockTextByMessageId(
+            messages = listOf(
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.USER,
+                    text = "question",
+                    orderIndex = 1,
+                ),
+                earlierAssistant,
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.USER,
+                    text = "follow-up",
+                    orderIndex = 3,
+                ),
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.ASSISTANT,
+                    text = "live reply",
+                    turnId = "turn-live",
+                    orderIndex = 4,
+                ),
+            ),
+            activeTurnId = "turn-live",
+            isThreadRunning = true,
+        )
+
+        assertEquals(mapOf("assistant-1" to "stable reply"), result)
     }
 
     private fun fakeAttachment(): CodexImageAttachment {

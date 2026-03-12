@@ -170,6 +170,13 @@ fun SettingsConnectionCard(
     onRemovePairing: (String) -> Unit,
     onPreferredTransportSelected: (String, String) -> Unit,
 ) {
+    val connectionActionInFlight = when (state.connectionPhase) {
+        com.remodex.android.data.model.ConnectionPhase.CONNECTING,
+        com.remodex.android.data.model.ConnectionPhase.LOADING_CHATS,
+        com.remodex.android.data.model.ConnectionPhase.SYNCING -> true
+        com.remodex.android.data.model.ConnectionPhase.CONNECTED,
+        com.remodex.android.data.model.ConnectionPhase.OFFLINE -> false
+    }
     SettingsCard(title = "Connection") {
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -199,11 +206,38 @@ fun SettingsConnectionCard(
             )
         }
 
+        when (state.connectionPhase) {
+            com.remodex.android.data.model.ConnectionPhase.CONNECTING -> {
+                Text(
+                    text = "Connecting to bridge...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            com.remodex.android.data.model.ConnectionPhase.LOADING_CHATS -> {
+                Text(
+                    text = "Loading chats...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            com.remodex.android.data.model.ConnectionPhase.SYNCING -> {
+                Text(
+                    text = "Syncing workspace...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            com.remodex.android.data.model.ConnectionPhase.CONNECTED,
+            com.remodex.android.data.model.ConnectionPhase.OFFLINE -> Unit
+        }
+
         state.pairings.forEach { pairing ->
             SettingsPairingCard(
                 pairing = pairing,
                 isActive = pairing.macDeviceId == state.activePairingMacDeviceId,
                 isConnected = state.isConnected && pairing.macDeviceId == state.activePairingMacDeviceId,
+                isBusy = connectionActionInFlight,
                 onSelectPairing = { onSelectPairing(pairing.macDeviceId) },
                 onRemovePairing = { onRemovePairing(pairing.macDeviceId) },
                 onPreferredTransportSelected = { url ->
@@ -213,12 +247,18 @@ fun SettingsConnectionCard(
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onReconnect) {
+            Button(
+                onClick = onReconnect,
+                enabled = !connectionActionInFlight,
+            ) {
                 androidx.compose.material3.Icon(Icons.Outlined.Refresh, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("Reconnect")
             }
-            OutlinedButton(onClick = onDisconnect) {
+            OutlinedButton(
+                onClick = onDisconnect,
+                enabled = !connectionActionInFlight,
+            ) {
                 androidx.compose.material3.Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("Disconnect")
@@ -232,6 +272,7 @@ private fun SettingsPairingCard(
     pairing: PairingRecord,
     isActive: Boolean,
     isConnected: Boolean,
+    isBusy: Boolean,
     onSelectPairing: () -> Unit,
     onRemovePairing: () -> Unit,
     onPreferredTransportSelected: (String) -> Unit,
@@ -278,7 +319,11 @@ private fun SettingsPairingCard(
                     selectedValue = selectedTransport,
                     options = pairing.transportCandidates,
                     displayValue = { it.label ?: it.url },
-                    onValueSelected = { onPreferredTransportSelected(it.url) },
+                    onValueSelected = {
+                        if (!isBusy) {
+                            onPreferredTransportSelected(it.url)
+                        }
+                    },
                 )
                 Text(
                     text = if (pairing.preferredTransportUrl.isNullOrBlank()) {
@@ -299,11 +344,17 @@ private fun SettingsPairingCard(
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!isActive) {
-                    OutlinedButton(onClick = onSelectPairing) {
+                    OutlinedButton(
+                        onClick = onSelectPairing,
+                        enabled = !isBusy,
+                    ) {
                         Text(if (isConnected) "Switch to This Mac" else "Use This Mac")
                     }
                 }
-                TextButton(onClick = onRemovePairing) {
+                TextButton(
+                    onClick = onRemovePairing,
+                    enabled = !isBusy,
+                ) {
                     Text("Remove", color = Danger)
                 }
             }

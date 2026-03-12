@@ -26,6 +26,8 @@ internal fun TurnConversationContainer(
     messages: List<ChatMessage>,
     renderItems: List<TimelineRenderItem>,
     isRunning: Boolean,
+    activeTurnId: String?,
+    turnViewModel: TurnViewModel,
     pendingApproval: ApprovalRequest?,
     onInputChanged: (String) -> Unit,
     onSend: (String, List<CodexImageAttachment>, List<CodexTurnSkillMention>, Boolean) -> Unit,
@@ -50,6 +52,8 @@ internal fun TurnConversationContainer(
                 messages = messages,
                 renderItems = renderItems,
                 isRunning = isRunning,
+                activeTurnId = activeTurnId,
+                turnViewModel = turnViewModel,
                 onSubmitStructuredInput = onSubmitStructuredInput,
             )
         }
@@ -73,6 +77,7 @@ internal fun TurnConversationContainer(
             onSelectModel = onSelectModel,
             onSelectReasoning = onSelectReasoning,
             onSelectAccessMode = onSelectAccessMode,
+            turnViewModel = turnViewModel,
             viewModel = viewModel,
         )
     }
@@ -90,6 +95,7 @@ internal fun TurnComposerSlot(
     onSelectModel: (String?) -> Unit,
     onSelectReasoning: (String?) -> Unit,
     onSelectAccessMode: (AccessMode) -> Unit,
+    turnViewModel: TurnViewModel,
     viewModel: AppViewModel,
 ) {
     com.remodex.android.ui.turn.TurnComposerHost(
@@ -103,6 +109,7 @@ internal fun TurnComposerSlot(
         onSelectModel = onSelectModel,
         onSelectReasoning = onSelectReasoning,
         onSelectAccessMode = onSelectAccessMode,
+        turnViewModel = turnViewModel,
         viewModel = viewModel,
     )
 }

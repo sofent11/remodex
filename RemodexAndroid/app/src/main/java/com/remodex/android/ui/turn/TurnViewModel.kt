@@ -48,12 +48,14 @@ class TurnViewModel {
     var plusMenuExpanded by mutableStateOf(false)
     var modelMenuExpanded by mutableStateOf(false)
     var reasoningMenuExpanded by mutableStateOf(false)
+    var runtimeMenuExpanded by mutableStateOf(false)
     var accessMenuExpanded by mutableStateOf(false)
     var gitMenuExpanded by mutableStateOf(false)
     var steeringDraftId by mutableStateOf<String?>(null)
     var isQueueResuming by mutableStateOf(false)
     var isFocused by mutableStateOf(false)
-    var isLocalMode by mutableStateOf(true)
+    var shouldAnchorToAssistantResponse by mutableStateOf(false)
+    var isScrolledToBottom by mutableStateOf(true)
     var composerNoticeMessage by mutableStateOf<String?>(null)
     var autocompleteFiles by mutableStateOf<List<FuzzyFileMatch>>(emptyList())
     var autocompleteSkills by mutableStateOf<List<SkillMetadata>>(emptyList())
@@ -133,6 +135,10 @@ class TurnViewModel {
 
     fun togglePlanMode() {
         isPlanModeArmed = !isPlanModeArmed
+    }
+
+    fun requestAssistantResponseAnchor() {
+        shouldAnchorToAssistantResponse = true
     }
 
     fun beginSteeringDraft(id: String) {

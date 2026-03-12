@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
@@ -62,6 +63,7 @@ fun SidebarThreadListView(
     onArchiveToggleThread: (ThreadSummary) -> Unit,
     isFiltering: Boolean,
     isConnected: Boolean,
+    isSearchActive: Boolean,
 ) {
     var expandedProjectIds by rememberSaveable { mutableStateOf(emptySet<String>()) }
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
@@ -76,6 +78,15 @@ fun SidebarThreadListView(
             projectIds
         } else {
             expandedProjectIds.intersect(projectIds) + (projectIds - expandedProjectIds)
+        }
+    }
+
+    LaunchedEffect(selectedThreadId, groups) {
+        val selectedProjectGroupId = groups.firstOrNull { group ->
+            group.kind == SidebarThreadGroupKind.PROJECT && group.threads.any { it.id == selectedThreadId }
+        }?.id
+        if (selectedProjectGroupId != null) {
+            expandedProjectIds = expandedProjectIds + selectedProjectGroupId
         }
     }
 
@@ -96,6 +107,7 @@ fun SidebarThreadListView(
 
     LazyColumn(
         verticalArrangement = Arrangement.Top,
+        modifier = Modifier.fillMaxWidth(),
     ) {
         items(groups, key = { it.id }) { group ->
             when (group.kind) {
@@ -144,10 +156,10 @@ fun SidebarThreadListView(
 
                 SidebarThreadGroupKind.ARCHIVED -> {
                     SidebarArchivedGroupHeader(
-                        expanded = archivedExpanded,
+                        expanded = archivedExpanded || isSearchActive,
                         onToggle = { archivedExpanded = !archivedExpanded },
                     )
-                    AnimatedVisibility(visible = archivedExpanded) {
+                    AnimatedVisibility(visible = archivedExpanded || isSearchActive) {
                         Column {
                             group.threads.forEach { thread ->
                                 SidebarThreadRowView(
@@ -213,7 +225,7 @@ private fun SidebarProjectGroupHeader(
                 modifier = Modifier.weight(1f),
             )
             Icon(
-                imageVector = Icons.Filled.KeyboardArrowRight,
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
@@ -260,7 +272,7 @@ private fun SidebarArchivedGroupHeader(
             modifier = Modifier.weight(1f),
         )
         Icon(
-            imageVector = Icons.Filled.KeyboardArrowRight,
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier

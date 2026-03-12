@@ -17,12 +17,17 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,19 +38,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.remodex.android.data.model.PairingRecord
+import com.remodex.android.data.model.TransportCandidate
 import com.remodex.android.ui.components.PairingScannerView
 import com.remodex.android.ui.shared.GlassCard
 import com.remodex.android.ui.theme.Danger
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun PairingEntryScreen(
     importText: String,
     errorMessage: String?,
+    pendingTransportSelectionPairing: PairingRecord?,
     onImportTextChanged: (String) -> Unit,
     onImport: () -> Unit,
     onScannedPayload: (String) -> Unit,
+    onSelectTransport: (String, String) -> Unit,
 ) {
     var scannerMode by rememberSaveable { mutableStateOf(true) }
+    val transportSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     Box(
         modifier = Modifier
@@ -199,5 +210,60 @@ fun PairingEntryScreen(
                 }
             }
         }
+    }
+
+    pendingTransportSelectionPairing?.takeIf { it.transportCandidates.size > 1 }?.let { pairing ->
+        ModalBottomSheet(
+            onDismissRequest = {},
+            sheetState = transportSheetState,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "Choose a transport",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = "This Mac advertised multiple bridge routes. Pick the one Android should use for this pairing.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                pairing.transportCandidates.forEach { candidate ->
+                    TransportCandidateRow(
+                        candidate = candidate,
+                        onClick = {
+                            onSelectTransport(pairing.macDeviceId, candidate.url)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TransportCandidateRow(
+    candidate: TransportCandidate,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        ListItem(
+            headlineContent = {
+                Text(candidate.label ?: candidate.kind.replace('_', ' ').replaceFirstChar(Char::uppercase))
+            },
+            supportingContent = {
+                Text(candidate.url)
+            },
+        )
     }
 }

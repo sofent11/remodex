@@ -205,14 +205,35 @@ class RemodexRepository(context: Context) {
                     pairings = updatedPairings,
                     activePairingMacDeviceId = record.macDeviceId,
                     trustedMacRegistry = updatedTrustedRegistry,
-                    secureConnectionState = SecureConnectionState.HANDSHAKING,
+                    pendingTransportSelectionMacDeviceId = if (record.transportCandidates.size > 1) {
+                        record.macDeviceId
+                    } else {
+                        null
+                    },
+                    secureConnectionState = resolveSecureConnectionState(record.macDeviceId, updatedTrustedRegistry),
                     secureMacFingerprint = SecureCrypto.fingerprint(record.macIdentityPublicKey),
                     importText = "",
                     lastErrorMessage = null,
                 )
             }
-            connectActivePairing()
+            if (record.transportCandidates.size == 1) {
+                val selectedUrl = record.transportCandidates.first().url
+                setPreferredTransport(record.macDeviceId, selectedUrl)
+                connectActivePairing()
+            }
         }
+    }
+
+    fun confirmPendingPairingTransport(macDeviceId: String, url: String) {
+        setPreferredTransport(macDeviceId, url)
+        updateState {
+            copy(
+                activePairingMacDeviceId = macDeviceId,
+                pendingTransportSelectionMacDeviceId = null,
+                lastErrorMessage = null,
+            )
+        }
+        connectActivePairing()
     }
 
     fun connectActivePairing() {
@@ -338,6 +359,8 @@ class RemodexRepository(context: Context) {
                     secureMacFingerprint = remaining.firstOrNull { it.macDeviceId == activeMacDeviceId }
                         ?.macIdentityPublicKey
                         ?.let(SecureCrypto::fingerprint),
+                    pendingTransportSelectionMacDeviceId = pendingTransportSelectionMacDeviceId
+                        ?.takeUnless { it == macDeviceId },
                 )
             }
 
@@ -352,6 +375,7 @@ class RemodexRepository(context: Context) {
         updateState {
             copy(
                 activePairingMacDeviceId = macDeviceId,
+                pendingTransportSelectionMacDeviceId = null,
                 secureConnectionState = resolveSecureConnectionState(macDeviceId, trustedMacRegistry),
                 secureMacFingerprint = pairings.firstOrNull { it.macDeviceId == macDeviceId }
                     ?.macIdentityPublicKey
@@ -385,24 +409,7 @@ class RemodexRepository(context: Context) {
 
     fun createThread(preferredProjectPath: String? = null) {
         scope.launch {
-            val params = buildJsonObject(
-                "model" to state.value.selectedModelId?.let(::JsonPrimitive),
-                "cwd" to preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let(::JsonPrimitive),
-            )
-            val response = requestWithSandboxFallback("thread/start", params)
-            val thread = response
-                ?.jsonObjectOrNull()
-                ?.get("thread")
-                ?.jsonObjectOrNull()
-                ?.let(ThreadSummary::fromJson)
-                ?: return@launch updateError("thread/start did not return a thread.")
-            updateState {
-                copy(
-                    threads = upsertThread(threads, thread),
-                    selectedThreadId = thread.id,
-                    lastErrorMessage = null,
-                )
-            }
+            startThread(preferredProjectPath)
         }
     }
 
@@ -587,10 +594,9 @@ class RemodexRepository(context: Context) {
                 return@launch
             }
 
-            val threadId = state.value.selectedThreadId ?: run {
-                createThread()
-                return@launch
-            }
+            val threadId = state.value.selectedThreadId
+                ?: startThread(preferredProjectPath = null)?.id
+                ?: return@launch
 
             val queueStatus = state.value.threadQueueStatus(threadId)
             if (queueStatus.blocksImmediateSend) {
@@ -791,21 +797,33 @@ class RemodexRepository(context: Context) {
     suspend fun gitStatus(cwd: String): com.remodex.android.data.model.GitRepoSyncResult? {
         val params = buildJsonObject("cwd" to JsonPrimitive(cwd))
         val response = activeClient().sendRequest("git/status", params)?.jsonObjectOrNull() ?: return null
-        
-        val isDirty = response.bool("isDirty") ?: false
-        val hasUnpushedCommits = response.bool("hasUnpushedCommits") ?: false
-        val hasUnpulledCommits = response.bool("hasUnpulledCommits") ?: false
-        val hasDiverged = response.bool("hasDiverged") ?: false
+
+        val aheadCount = response.int("ahead") ?: response.int("unpushedCount") ?: 0
+        val behindCount = response.int("behind") ?: response.int("unpulledCount") ?: 0
+        val isDirty = response.bool("dirty") ?: response.bool("isDirty") ?: false
+        val hasUnpushedCommits = response.bool("hasUnpushedCommits") ?: (aheadCount > 0)
+        val hasUnpulledCommits = response.bool("hasUnpulledCommits") ?: (behindCount > 0)
+        val hasDiverged = response.bool("hasDiverged") ?: ((aheadCount > 0) && (behindCount > 0))
         val isDetachedHead = response.bool("isDetachedHead") ?: false
         val branch = response.string("branch")
-        val upstreamBranch = response.string("upstreamBranch")
+        val upstreamBranch = response.string("upstreamBranch") ?: response.string("tracking")
         val unstagedCount = response.int("unstagedCount") ?: 0
         val stagedCount = response.int("stagedCount") ?: 0
-        val unpushedCount = response.int("unpushedCount") ?: 0
-        val unpulledCount = response.int("unpulledCount") ?: 0
+        val unpushedCount = response.int("unpushedCount") ?: aheadCount
+        val unpulledCount = response.int("unpulledCount") ?: behindCount
         val untrackedCount = response.int("untrackedCount") ?: 0
         val repoRoot = response.string("repoRoot")
-        
+        val stateLabel = response.string("state") ?: "up_to_date"
+        val canPush = response.bool("canPush") ?: hasUnpushedCommits
+        val repoDiffTotals = response["diff"]?.jsonObjectOrNull()?.let { diff ->
+            val totals = com.remodex.android.data.model.GitDiffTotals(
+                additions = diff.int("additions") ?: 0,
+                deletions = diff.int("deletions") ?: 0,
+                binaryFiles = diff.int("binaryFiles") ?: 0,
+            )
+            totals.takeIf { it.hasChanges }
+        }
+
         val result = com.remodex.android.data.model.GitRepoSyncResult(
             isDirty = isDirty,
             hasUnpushedCommits = hasUnpushedCommits,
@@ -819,7 +837,10 @@ class RemodexRepository(context: Context) {
             unpushedCount = unpushedCount,
             unpulledCount = unpulledCount,
             untrackedCount = untrackedCount,
-            repoRoot = repoRoot
+            repoRoot = repoRoot,
+            state = stateLabel,
+            canPush = canPush,
+            repoDiffTotals = repoDiffTotals,
         )
         val threadId = state.value.selectedThreadId?.takeIf { selectedId ->
             state.value.threads.firstOrNull { it.id == selectedId }?.cwd == cwd
@@ -836,6 +857,14 @@ class RemodexRepository(context: Context) {
         return result
     }
 
+    suspend fun gitDiff(cwd: String): String? {
+        val params = buildJsonObject("cwd" to JsonPrimitive(cwd))
+        val response = activeClient().sendRequest("git/diff", params)?.jsonObjectOrNull() ?: return null
+        return response.string("patch")
+            ?: response.string("diff")
+            ?: response["result"]?.jsonObjectOrNull()?.string("patch")
+    }
+
     suspend fun gitCommit(cwd: String, message: String) {
         val params = buildJsonObject(
             "cwd" to JsonPrimitive(cwd),
@@ -845,16 +874,24 @@ class RemodexRepository(context: Context) {
     }
     
     suspend fun performGitAction(cwd: String, action: com.remodex.android.data.model.TurnGitActionKind) {
-        val method = when (action) {
-            com.remodex.android.data.model.TurnGitActionKind.SYNC_NOW -> "git/sync"
-            com.remodex.android.data.model.TurnGitActionKind.PUSH -> "git/push"
-            com.remodex.android.data.model.TurnGitActionKind.COMMIT -> "git/commit"
-            com.remodex.android.data.model.TurnGitActionKind.COMMIT_AND_PUSH -> "git/commitAndPush"
-            com.remodex.android.data.model.TurnGitActionKind.CREATE_PR -> "git/createPR"
-            com.remodex.android.data.model.TurnGitActionKind.DISCARD_LOCAL_CHANGES -> "git/discard"
-        }
         val params = buildJsonObject("cwd" to JsonPrimitive(cwd))
-        activeClient().sendRequest(method, params)
+        when (action) {
+            com.remodex.android.data.model.TurnGitActionKind.DISCARD_LOCAL_CHANGES -> {
+                activeClient().sendRequest("git/discard", params)
+                activeClient().sendRequest("git/sync", params)
+            }
+            else -> {
+                val method = when (action) {
+                    com.remodex.android.data.model.TurnGitActionKind.SYNC_NOW -> "git/sync"
+                    com.remodex.android.data.model.TurnGitActionKind.PUSH -> "git/push"
+                    com.remodex.android.data.model.TurnGitActionKind.COMMIT -> "git/commit"
+                    com.remodex.android.data.model.TurnGitActionKind.COMMIT_AND_PUSH -> "git/commitAndPush"
+                    com.remodex.android.data.model.TurnGitActionKind.CREATE_PR -> "git/createPR"
+                    com.remodex.android.data.model.TurnGitActionKind.DISCARD_LOCAL_CHANGES -> error("unreachable")
+                }
+                activeClient().sendRequest(method, params)
+            }
+        }
     }
 
 
@@ -1775,10 +1812,14 @@ class RemodexRepository(context: Context) {
         planState: PlanState? = null,
         replaceText: Boolean = false,
     ) {
+        val normalizedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty)
+        if (normalizedTurnId == null && !state.value.threadHasActiveOrRunningTurn(threadId)) {
+            return
+        }
         if (textDelta.isBlank() && !completed) {
             return
         }
-        val streamKey = listOfNotNull(threadId, turnId, itemId, role.name, kind.name).joinToString(":")
+        val streamKey = listOfNotNull(threadId, normalizedTurnId, itemId, role.name, kind.name).joinToString(":")
         updateState {
             val existingMessages = messagesByThread[threadId].orEmpty().toMutableList()
             val existingMessageId = streamingMessageIdsByKey[streamKey]
@@ -1804,7 +1845,7 @@ class RemodexRepository(context: Context) {
                     role = role,
                     kind = kind,
                     text = textDelta,
-                    turnId = turnId,
+                    turnId = normalizedTurnId,
                     itemId = itemId,
                     isStreaming = !completed,
                     orderIndex = nextOrderIndex(),
@@ -1874,12 +1915,11 @@ class RemodexRepository(context: Context) {
                     return@SecureBridgeClient
                 }
                 Log.e(TAG, "client disconnected epoch=$epoch phase=${state.value.connectionPhase}", throwable)
+                val isBenignDisconnect = throwable.isBenignBackgroundDisconnect()
                 updateState {
                     copy(
                         connectionPhase = ConnectionPhase.OFFLINE,
-                        runningThreadIds = emptySet(),
-                        activeTurnIdByThread = emptyMap(),
-                        lastErrorMessage = throwable?.message,
+                        lastErrorMessage = if (isBenignDisconnect) lastErrorMessage else throwable?.message,
                     )
                 }
             },
@@ -2357,6 +2397,31 @@ class RemodexRepository(context: Context) {
         return unique.toList()
     }
 
+    private suspend fun startThread(preferredProjectPath: String?): ThreadSummary? {
+        val params = buildJsonObject(
+            "model" to state.value.selectedModelId?.let(::JsonPrimitive),
+            "cwd" to preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let(::JsonPrimitive),
+        )
+        val response = requestWithSandboxFallback("thread/start", params)
+        val thread = response
+            ?.jsonObjectOrNull()
+            ?.get("thread")
+            ?.jsonObjectOrNull()
+            ?.let(ThreadSummary::fromJson)
+            ?: run {
+                updateError("thread/start did not return a thread.")
+                return null
+            }
+        updateState {
+            copy(
+                threads = upsertThread(threads, thread),
+                selectedThreadId = thread.id,
+                lastErrorMessage = null,
+            )
+        }
+        return thread
+    }
+
     private fun rememberSuccessfulTransport(url: String) {
         val activePairing = state.value.activePairing ?: return
         val updatedPairings = state.value.pairings.map { pairing ->
@@ -2514,6 +2579,22 @@ private fun flattenStringParts(value: JsonElement?): String {
 
 private fun firstNonBlank(vararg values: String?): String? {
     return values.firstOrNull { !it.isNullOrBlank() }?.trim()
+}
+
+private fun AppState.threadHasActiveOrRunningTurn(threadId: String): Boolean {
+    return activeTurnIdByThread[threadId]?.isNotBlank() == true || runningThreadIds.contains(threadId)
+}
+
+private fun Throwable?.isBenignBackgroundDisconnect(): Boolean {
+    val message = this?.message?.lowercase().orEmpty()
+    if (message.isEmpty()) {
+        return false
+    }
+    return message.contains("econnaborted") ||
+        message.contains("ecanceled") ||
+        message.contains("enotconn") ||
+        message.contains("socket closed") ||
+        message.contains("disconnected")
 }
 
 private fun <T> firstNonNull(vararg values: T?): T? = values.firstOrNull { it != null }

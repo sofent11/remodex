@@ -41,6 +41,27 @@ class ContentViewModelTest {
     }
 
     @Test
+    fun shouldNotReconnectWhileSettingsAreVisible() {
+        val viewModel = ContentViewModel()
+        val state = appState(pairings = listOf(pairingRecord()))
+        viewModel.openSettings()
+
+        assertFalse(viewModel.shouldAttemptForegroundReconnect(state))
+    }
+
+    @Test
+    fun shouldNotAutoConnectWhilePendingTransportSelectionExists() {
+        val viewModel = ContentViewModel()
+        val state = appState(
+            pairings = listOf(pairingRecord()),
+            pendingTransportSelectionMacDeviceId = "mac-1",
+        )
+
+        assertFalse(viewModel.shouldAttemptAutoConnect(state))
+        assertFalse(viewModel.shouldAttemptForegroundReconnect(state))
+    }
+
+    @Test
     fun maybeDismissPairingEntryClosesPairingAfterConnectionPhaseChanges() {
         val viewModel = ContentViewModel()
         viewModel.startPairingFlow(ConnectionPhase.OFFLINE)
@@ -56,6 +77,24 @@ class ContentViewModelTest {
 
         assertTrue(shouldDismiss)
         assertEquals(AppShellContent.EMPTY, viewModel.shellContent(appState()))
+    }
+
+    @Test
+    fun maybeDismissPairingEntryStaysVisibleWhileTransportSelectionIsPending() {
+        val viewModel = ContentViewModel()
+        viewModel.startPairingFlow(ConnectionPhase.OFFLINE)
+        viewModel.markPairingSubmission()
+
+        val shouldDismiss = viewModel.maybeDismissPairingEntry(
+            appState(
+                pairings = listOf(pairingRecord()),
+                activePairingMacDeviceId = "mac-1",
+                pendingTransportSelectionMacDeviceId = "mac-1",
+            ),
+        )
+
+        assertFalse(shouldDismiss)
+        assertEquals(AppShellContent.PAIRING, viewModel.shellContent(appState()))
     }
 
     @Test
@@ -79,6 +118,7 @@ class ContentViewModelTest {
         connectionPhase: ConnectionPhase = ConnectionPhase.OFFLINE,
         selectedThreadId: String? = null,
         threads: List<ThreadSummary> = emptyList(),
+        pendingTransportSelectionMacDeviceId: String? = null,
     ): AppState {
         return AppState(
             onboardingSeen = true,
@@ -94,6 +134,7 @@ class ContentViewModelTest {
             connectionPhase = connectionPhase,
             threads = threads,
             selectedThreadId = selectedThreadId,
+            pendingTransportSelectionMacDeviceId = pendingTransportSelectionMacDeviceId,
         )
     }
 

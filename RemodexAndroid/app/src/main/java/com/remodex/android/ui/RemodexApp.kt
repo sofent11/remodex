@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
@@ -50,7 +51,10 @@ import com.remodex.android.ui.screens.SettingsScreen
 import com.remodex.android.ui.screens.SidebarScreen
 import com.remodex.android.ui.shared.AppBackdrop
 import com.remodex.android.ui.shared.StatusPill
+import com.remodex.android.ui.turn.DiffDetailDialog
 import com.remodex.android.ui.turn.TurnScreen
+import com.remodex.android.ui.turn.TurnTopBarActions
+import com.remodex.android.ui.turn.buildRepositoryDiffFiles
 import kotlinx.coroutines.launch
 
 @Composable
@@ -65,13 +69,15 @@ fun RemodexApp(
         return
     }
 
-    if (state.pairings.isEmpty()) {
+    if (state.pairings.isEmpty() || state.pendingTransportSelectionPairing != null) {
         PairingEntryScreen(
             importText = state.importText,
             errorMessage = state.lastErrorMessage,
+            pendingTransportSelectionPairing = state.pendingTransportSelectionPairing,
             onImportTextChanged = viewModel::updateImportText,
             onImport = { viewModel.importPairingPayload(state.importText) },
             onScannedPayload = viewModel::importPairingPayload,
+            onSelectTransport = viewModel::confirmPendingPairingTransport,
         )
         return
     }
@@ -100,6 +106,10 @@ private fun RemodexAppShell(
     val coroutineScope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
     val shellContent = contentViewModel.shellContent(state)
+    val selectedThread = state.selectedThread
+    val isSelectedThreadRunning = selectedThread?.id?.let { threadId ->
+        state.runningThreadIds.contains(threadId) || state.activeTurnIdByThread.containsKey(threadId)
+    } == true
     val shellHeader = remember(
         shellContent,
         state.selectedThreadId,
@@ -109,6 +119,8 @@ private fun RemodexAppShell(
         shellHeader(shellContent, state)
     }
     var messageInput by rememberSaveable(state.selectedThreadId) { mutableStateOf("") }
+    var repositoryDiffBody by remember(state.selectedThreadId) { mutableStateOf<String?>(null) }
+    var isSidebarSearchActive by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(
         lifecycleOwner,
@@ -150,7 +162,11 @@ private fun RemodexAppShell(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet(
-                modifier = Modifier.width(330.dp),
+                modifier = if (isSidebarSearchActive) {
+                    Modifier.fillMaxWidth()
+                } else {
+                    Modifier.width(330.dp)
+                },
                 drawerContainerColor = MaterialTheme.colorScheme.surface,
             ) {
                 SidebarScreen(
@@ -173,6 +189,7 @@ private fun RemodexAppShell(
                     onArchiveThread = viewModel::archiveThread,
                     onUnarchiveThread = viewModel::unarchiveThread,
                     onRenameThread = viewModel::renameThread,
+                    onSearchActiveChanged = { isSidebarSearchActive = it },
                 )
             }
         },
@@ -208,6 +225,27 @@ private fun RemodexAppShell(
                         }
                     },
                     actions = {
+                        if (shellContent == AppShellContent.THREAD) {
+                            TurnTopBarActions(
+                                gitRepoSyncResult = state.gitRepoSyncResult,
+                                enabled = state.isConnected &&
+                                    selectedThread?.cwd != null &&
+                                    !isSelectedThreadRunning,
+                                onShowRepoDiff = {
+                                    val cwd = selectedThread?.cwd ?: return@TurnTopBarActions
+                                    coroutineScope.launch {
+                                        repositoryDiffBody = viewModel.gitDiff(cwd)
+                                    }
+                                },
+                                onSelectGitAction = { action ->
+                                    val cwd = selectedThread?.cwd ?: return@TurnTopBarActions
+                                    coroutineScope.launch {
+                                        viewModel.performGitAction(cwd, action)
+                                        viewModel.gitStatus(cwd)
+                                    }
+                                },
+                            )
+                        }
                         StatusPill(state = state)
                     },
                 )
@@ -239,6 +277,7 @@ private fun RemodexAppShell(
                         AppShellContent.PAIRING -> PairingEntryScreen(
                             importText = state.importText,
                             errorMessage = state.lastErrorMessage,
+                            pendingTransportSelectionPairing = state.pendingTransportSelectionPairing,
                             onImportTextChanged = viewModel::updateImportText,
                             onImport = {
                                 contentViewModel.markPairingSubmission()
@@ -248,6 +287,7 @@ private fun RemodexAppShell(
                                 contentViewModel.markPairingSubmission()
                                 viewModel.importPairingPayload(payload)
                             },
+                            onSelectTransport = viewModel::confirmPendingPairingTransport,
                         )
 
                         AppShellContent.THREAD -> TurnScreen(
@@ -283,6 +323,15 @@ private fun RemodexAppShell(
                             },
                         )
                     }
+                }
+
+                repositoryDiffBody?.let { patch ->
+                    DiffDetailDialog(
+                        title = "Repository changes",
+                        files = remember(patch) { buildRepositoryDiffFiles(patch) },
+                        fallbackBody = patch,
+                        onDismiss = { repositoryDiffBody = null },
+                    )
                 }
             }
         }

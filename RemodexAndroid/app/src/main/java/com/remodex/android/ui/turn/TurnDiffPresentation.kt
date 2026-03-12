@@ -51,6 +51,10 @@ internal fun buildDiffDetailFiles(message: ChatMessage): List<DiffFileDetailUi> 
     return parseDiffDetailFiles(message.text)
 }
 
+internal fun buildRepositoryDiffFiles(rawPatch: String): List<DiffFileDetailUi> {
+    return parseDiffDetailFiles(rawPatch)
+}
+
 private fun parseDiffDetailFiles(text: String): List<DiffFileDetailUi> {
     val lines = text.lines()
     val files = mutableListOf<MutableDiffFileDetail>()

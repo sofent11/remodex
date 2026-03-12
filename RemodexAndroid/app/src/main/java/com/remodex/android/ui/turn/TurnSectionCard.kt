@@ -42,6 +42,7 @@ import com.remodex.android.ui.theme.Border
 @Composable
 internal fun TurnSectionCard(
     item: TimelineRenderItem.TurnSection,
+    copyBlockTextByMessageId: Map<String, String>,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
 ) {
     val labels = remember(item.messages) { buildTurnSectionLabels(item.messages) }
@@ -184,6 +185,7 @@ internal fun TurnSectionCard(
                             onSubmitStructuredInput = onSubmitStructuredInput,
                             grouped = true,
                             replyPresentation = replyPresentation,
+                            copyBlockText = copyBlockTextByMessageId[message.id],
                         )
                     }
                 }

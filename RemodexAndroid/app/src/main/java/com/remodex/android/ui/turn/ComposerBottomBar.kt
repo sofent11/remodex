@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -296,6 +297,7 @@ internal fun ComposerSecondaryToolbar(
     onSelectAccessMode: (AccessMode) -> Unit,
     onGitAction: (com.remodex.android.data.model.TurnGitActionKind) -> Unit,
 ) {
+    val uriHandler = LocalUriHandler.current
     AnimatedVisibility(visible = !turnViewModel.isFocused) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -309,28 +311,46 @@ internal fun ComposerSecondaryToolbar(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Surface(
-                    onClick = { turnViewModel.isLocalMode = !turnViewModel.isLocalMode },
-                    shape = RoundedCornerShape(999.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                Box {
+                    Surface(
+                        onClick = { turnViewModel.runtimeMenuExpanded = true },
+                        shape = RoundedCornerShape(999.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .background(
-                                    if (turnViewModel.isLocalMode) CommandAccent else PlanAccent,
-                                    CircleShape,
-                                ),
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(CommandAccent, CircleShape),
+                            )
+                            Text(
+                                text = "Local",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = turnViewModel.runtimeMenuExpanded,
+                        onDismissRequest = { turnViewModel.runtimeMenuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Local") },
+                            leadingIcon = { Icon(Icons.Outlined.Check, contentDescription = null) },
+                            onClick = {
+                                turnViewModel.runtimeMenuExpanded = false
+                            },
                         )
-                        Text(
-                            text = if (turnViewModel.isLocalMode) "Local" else "Cloud",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
+                        DropdownMenuItem(
+                            text = { Text("Cloud") },
+                            onClick = {
+                                turnViewModel.runtimeMenuExpanded = false
+                                uriHandler.openUri("https://chatgpt.com/codex")
+                            },
                         )
                     }
                 }

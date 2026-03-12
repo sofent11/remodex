@@ -84,6 +84,7 @@ internal fun TurnComposerView(
                     onSteerDraft = { draftId ->
                         if (threadIdForQueue != null) {
                             coroutineScope.launch {
+                                turnViewModel.requestAssistantResponseAnchor()
                                 turnViewModel.performDraftSteer(draftId) {
                                     viewModel.steerQueuedDraft(threadIdForQueue, draftId)
                                 }
@@ -138,6 +139,7 @@ internal fun TurnComposerView(
                     },
                     onSend = {
                         if (presentation.canSend) {
+                            turnViewModel.requestAssistantResponseAnchor()
                             onSend(
                                 turnViewModel.composeSendText(input),
                                 turnViewModel.readyComposerAttachments,
@@ -173,6 +175,7 @@ internal fun TurnComposerView(
                     onResumeQueue = {
                         if (threadIdForQueue != null) {
                             coroutineScope.launch {
+                                turnViewModel.requestAssistantResponseAnchor()
                                 turnViewModel.performQueueResume {
                                     viewModel.resumeQueuedDrafts(threadIdForQueue)
                                 }
@@ -180,6 +183,7 @@ internal fun TurnComposerView(
                         }
                     },
                     onSend = {
+                        turnViewModel.requestAssistantResponseAnchor()
                         onSend(
                             turnViewModel.composeSendText(input),
                             turnViewModel.readyComposerAttachments,

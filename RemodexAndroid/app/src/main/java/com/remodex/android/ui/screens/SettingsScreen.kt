@@ -17,8 +17,6 @@ import com.remodex.android.ui.settings.SettingsAppearanceCard
 import com.remodex.android.ui.settings.SettingsArchivedChatsCard
 import com.remodex.android.ui.settings.SettingsConnectionCard
 import com.remodex.android.ui.settings.SettingsNotificationsCard
-import com.remodex.android.ui.settings.SettingsOverviewCard
-import com.remodex.android.ui.settings.SettingsPairAnotherMacCard
 import com.remodex.android.ui.settings.SettingsRuntimeDefaultsCard
 
 @Composable
@@ -33,7 +31,10 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            SettingsOverviewCard(state = state)
+            SettingsArchivedChatsCard(
+                threads = state.threads,
+                onUnarchiveThread = viewModel::unarchiveThread,
+            )
         }
 
         item {
@@ -41,6 +42,10 @@ fun SettingsScreen(
                 fontStyle = state.fontStyle,
                 onFontStyleSelected = viewModel::setFontStyle,
             )
+        }
+
+        item {
+            SettingsNotificationsCard()
         }
 
         item {
@@ -60,25 +65,6 @@ fun SettingsScreen(
                 onSelectPairing = viewModel::selectPairing,
                 onRemovePairing = viewModel::removePairing,
                 onPreferredTransportSelected = viewModel::setPreferredTransport,
-            )
-        }
-
-        item {
-            SettingsNotificationsCard()
-        }
-
-        item {
-            SettingsArchivedChatsCard(
-                threads = state.threads,
-                onUnarchiveThread = viewModel::unarchiveThread,
-            )
-        }
-
-        item {
-            SettingsPairAnotherMacCard(
-                importText = state.importText,
-                onImportTextChanged = viewModel::updateImportText,
-                onImport = { viewModel.importPairingPayload(state.importText) },
             )
         }
 
