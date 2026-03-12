@@ -37,7 +37,8 @@ build/
 /use-navigate-to-local-conversation-*.js
 
 # Temp files
-$TMP_PLACEHOLDER
+/tmp/
+/*.py
 
 # Claude project config (local only)
 .claude/
