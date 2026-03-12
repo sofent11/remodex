@@ -1,4 +1,4 @@
-package com.remodex.android.ui.components
+package com.remodex.android.ui.turn
 
 import androidx.compose.runtime.Composable
 import com.remodex.android.app.AppViewModel
@@ -6,10 +6,9 @@ import com.remodex.android.data.model.AccessMode
 import com.remodex.android.data.model.AppState
 import com.remodex.android.data.model.CodexImageAttachment
 import com.remodex.android.data.model.CodexTurnSkillMention
-import com.remodex.android.ui.turn.TurnComposer
 
 @Composable
-fun ComposerCard(
+fun TurnComposer(
     state: AppState,
     input: String,
     onInputChanged: (String) -> Unit,
@@ -22,7 +21,7 @@ fun ComposerCard(
     onSelectAccessMode: (AccessMode) -> Unit,
     viewModel: AppViewModel,
 ) {
-    TurnComposer(
+    TurnComposerHost(
         state = state,
         input = input,
         onInputChanged = onInputChanged,

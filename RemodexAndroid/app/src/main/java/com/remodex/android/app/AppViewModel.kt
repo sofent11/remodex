@@ -5,6 +5,8 @@ import androidx.lifecycle.AndroidViewModel
 import com.remodex.android.data.model.AccessMode
 import com.remodex.android.data.model.AppFontStyle
 import com.remodex.android.data.repository.RemodexRepository
+import com.remodex.android.data.model.CodexImageAttachment
+import com.remodex.android.data.model.CodexTurnSkillMention
 import kotlinx.serialization.json.JsonElement
 import kotlinx.coroutines.flow.StateFlow
 
@@ -38,6 +40,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectThread(threadId: String) = repository.selectThread(threadId)
 
+    fun clearSelectedThread() = repository.clearSelectedThread()
+
     fun createThread(preferredProjectPath: String? = null) = repository.createThread(preferredProjectPath)
 
     fun deleteThread(threadId: String) = repository.deleteThread(threadId)
@@ -48,9 +52,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun renameThread(threadId: String, name: String) = repository.renameThread(threadId, name)
 
+    fun refreshThreadsIfConnected() = repository.refreshThreadsIfConnected()
+
     fun removeQueuedDraft(threadId: String, draftId: String) = repository.removeQueuedDraft(threadId, draftId)
 
-    fun sendMessage(text: String, usePlanMode: Boolean = false) = repository.sendMessage(text, usePlanMode)
+    fun resumeQueuedDrafts(threadId: String) = repository.resumeQueuedDrafts(threadId)
+
+    fun steerQueuedDraft(threadId: String, draftId: String) = repository.steerQueuedDraft(threadId, draftId)
+
+    fun sendMessage(
+        text: String,
+        attachments: List<CodexImageAttachment> = emptyList(),
+        skillMentions: List<CodexTurnSkillMention> = emptyList(),
+        usePlanMode: Boolean = false,
+    ) = repository.sendMessage(text, attachments, skillMentions, usePlanMode)
 
     fun interruptActiveTurn() = repository.interruptActiveTurn()
 

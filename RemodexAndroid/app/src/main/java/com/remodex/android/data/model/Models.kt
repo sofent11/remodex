@@ -266,6 +266,13 @@ data class FileChangeEntry(
     val deletions: Int? = null,
 )
 
+@Serializable
+data class CodexImageAttachment(
+    val thumbnailBase64JPEG: String,
+    val payloadDataURL: String? = null,
+    val sourceUrl: String? = null,
+)
+
 data class StructuredUserInputOption(
     val id: String = UUID.randomUUID().toString(),
     val label: String,
@@ -297,6 +304,7 @@ data class ChatMessage(
     val itemId: String? = null,
     val isStreaming: Boolean = false,
     val orderIndex: Int = 0,
+    val attachments: List<CodexImageAttachment> = emptyList(),
     val fileChanges: List<FileChangeEntry> = emptyList(),
     val commandState: CommandState? = null,
     val planState: PlanState? = null,
@@ -357,6 +365,28 @@ data class SkillMetadata(
     val id: String,
     val name: String,
     val description: String?,
+    val path: String? = null,
+)
+
+data class TurnComposerMentionedFile(
+    val id: String = UUID.randomUUID().toString(),
+    val fileName: String,
+    val path: String,
+)
+
+data class TurnComposerMentionedSkill(
+    val id: String = UUID.randomUUID().toString(),
+    val skillId: String,
+    val name: String,
+    val path: String? = null,
+    val description: String? = null,
+)
+
+@Serializable
+data class CodexTurnSkillMention(
+    val id: String,
+    val name: String? = null,
+    val path: String? = null,
 )
 
 data class AppState(
@@ -381,9 +411,10 @@ data class AppState(
     val pendingApproval: ApprovalRequest? = null,
     val lastErrorMessage: String? = null,
     val importText: String = "",
-    val gitRepoSyncResult: GitRepoSyncResult? = null,
-    val contextWindowUsage: ContextWindowUsage? = null,
+    val gitRepoSyncByThread: Map<String, GitRepoSyncResult> = emptyMap(),
+    val contextWindowUsageByThread: Map<String, ContextWindowUsage> = emptyMap(),
     val queuedTurnDraftsByThread: Map<String, List<QueuedTurnDraft>> = emptyMap(),
+    val queuePauseMessageByThread: Map<String, String> = emptyMap(),
 ) {
     val isConnected: Boolean
         get() = connectionPhase == ConnectionPhase.CONNECTED
@@ -393,6 +424,12 @@ data class AppState(
 
     val selectedThread: ThreadSummary?
         get() = threads.firstOrNull { it.id == selectedThreadId }
+
+    val gitRepoSyncResult: GitRepoSyncResult?
+        get() = selectedThreadId?.let(gitRepoSyncByThread::get)
+
+    val contextWindowUsage: ContextWindowUsage?
+        get() = selectedThreadId?.let(contextWindowUsageByThread::get)
 }
 
 fun JsonObject.string(key: String): String? = this[key].stringOrNull()
@@ -496,5 +533,7 @@ data class ContextWindowUsage(
 data class QueuedTurnDraft(
     val id: String = java.util.UUID.randomUUID().toString(),
     val text: String,
-    val usePlanMode: Boolean
+    val attachments: List<CodexImageAttachment> = emptyList(),
+    val skillMentions: List<CodexTurnSkillMention> = emptyList(),
+    val usePlanMode: Boolean,
 )

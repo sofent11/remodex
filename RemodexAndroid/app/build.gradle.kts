@@ -86,6 +86,9 @@ dependencies {
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.80")
 
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

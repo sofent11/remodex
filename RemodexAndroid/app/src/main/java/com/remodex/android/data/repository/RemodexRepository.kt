@@ -10,6 +10,8 @@ import com.remodex.android.data.model.CLOCK_SKEW_TOLERANCE_MS
 import com.remodex.android.data.model.CommandPhase
 import com.remodex.android.data.model.CommandState
 import com.remodex.android.data.model.ConnectionPhase
+import com.remodex.android.data.model.CodexImageAttachment
+import com.remodex.android.data.model.CodexTurnSkillMention
 import com.remodex.android.data.model.FileChangeEntry
 import com.remodex.android.data.model.FuzzyFileMatch
 import com.remodex.android.data.model.MessageKind
@@ -47,6 +49,7 @@ import com.remodex.android.data.network.SecureCrypto
 import com.remodex.android.data.storage.PairingStore
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -78,8 +81,26 @@ class RemodexRepository(context: Context) {
     private val clientMutex = Mutex()
     private val orderCounter = AtomicInteger(0)
     private val connectionEpoch = AtomicLong(0)
+    private val isConnectInFlight = AtomicBoolean(false)
     private val streamingMessageIdsByKey = mutableMapOf<String, String>()
     private var client: SecureBridgeClient? = null
+    private val queueCoordinator by lazy {
+        TurnQueueCoordinator(
+            scope = scope,
+            removeQueuedDraft = ::removeQueuedDraft,
+            prependQueuedDraft = ::prependQueuedDraft,
+            pauseQueuedDrafts = ::pauseQueuedDrafts,
+            dispatchDraftTurn = { threadId, payload ->
+                dispatchDraftTurn(
+                    threadId = threadId,
+                    text = payload.text,
+                    attachments = payload.attachments,
+                    skillMentions = payload.skillMentions,
+                    usePlanMode = payload.usePlanMode,
+                )
+            },
+        )
+    }
 
     private val _state = MutableStateFlow(
         AppState(
@@ -195,78 +216,86 @@ class RemodexRepository(context: Context) {
     }
 
     fun connectActivePairing() {
+        if (!isConnectInFlight.compareAndSet(false, true)) {
+            Log.d(TAG, "connectActivePairing ignored because a connection attempt is already in flight")
+            return
+        }
         scope.launch {
-            val epoch = connectionEpoch.incrementAndGet()
-            val currentState = state.value
-            val pairing = currentState.activePairing ?: run {
-                updateError("No saved bridge pairing is available.")
-                return@launch
-            }
-            val phoneIdentity = currentState.phoneIdentityState ?: run {
-                updateError("Phone identity is missing.")
-                return@launch
-            }
-
-            updateState {
-                copy(
-                    connectionPhase = ConnectionPhase.CONNECTING,
-                    lastErrorMessage = null,
-                )
-            }
-
-            val orderedUrls = orderedTransportUrls(pairing)
-            if (orderedUrls.isEmpty()) {
-                updateError("No saved bridge transport is available.")
-                updateState { copy(connectionPhase = ConnectionPhase.OFFLINE) }
-                return@launch
-            }
-
-            var lastFailure: Throwable? = null
-            for (url in orderedUrls) {
-                try {
-                    Log.d(TAG, "connectActivePairing epoch=$epoch url=$url mac=${pairing.macDeviceId}")
-                    val bridgeClient = buildClient(epoch)
-                    clientMutex.withLock {
-                        client?.disconnect()
-                        client = bridgeClient
-                    }
-                    bridgeClient.connect(
-                        url = url,
-                        pairingRecord = pairing,
-                        phoneIdentityState = phoneIdentity,
-                        trustedMacRecord = state.value.trustedMacRegistry.records[pairing.macDeviceId],
-                        accessMode = state.value.accessMode,
-                    )
-                    Log.d(TAG, "websocket+handshake ok epoch=$epoch url=$url")
-                    rememberSuccessfulTransport(url)
-                    initializeSession()
-                    Log.d(TAG, "initialize ok epoch=$epoch")
-                    listModels()
-                    Log.d(TAG, "model/list ok epoch=$epoch")
-                    listThreads()
-                    Log.d(TAG, "thread/list ok epoch=$epoch")
-                    updateState {
-                        copy(
-                            connectionPhase = ConnectionPhase.CONNECTED,
-                            lastErrorMessage = null,
-                            selectedThreadId = selectedThreadId ?: threads.firstOrNull()?.id,
-                        )
-                    }
-                    state.value.selectedThreadId?.let { threadId ->
-                        loadThreadHistory(threadId)
-                    }
+            try {
+                val epoch = connectionEpoch.incrementAndGet()
+                val currentState = state.value
+                val pairing = currentState.activePairing ?: run {
+                    updateError("No saved bridge pairing is available.")
                     return@launch
-                } catch (failure: Throwable) {
-                    Log.e(TAG, "connectActivePairing failed epoch=$epoch url=$url", failure)
-                    lastFailure = failure
                 }
-            }
+                val phoneIdentity = currentState.phoneIdentityState ?: run {
+                    updateError("Phone identity is missing.")
+                    return@launch
+                }
 
-            updateState {
-                copy(
-                    connectionPhase = ConnectionPhase.OFFLINE,
-                    lastErrorMessage = lastFailure?.message ?: "Could not connect to the Remodex bridge.",
-                )
+                updateState {
+                    copy(
+                        connectionPhase = ConnectionPhase.CONNECTING,
+                        lastErrorMessage = null,
+                    )
+                }
+
+                val orderedUrls = orderedTransportUrls(pairing)
+                if (orderedUrls.isEmpty()) {
+                    updateError("No saved bridge transport is available.")
+                    updateState { copy(connectionPhase = ConnectionPhase.OFFLINE) }
+                    return@launch
+                }
+
+                var lastFailure: Throwable? = null
+                for (url in orderedUrls) {
+                    try {
+                        Log.d(TAG, "connectActivePairing epoch=$epoch url=$url mac=${pairing.macDeviceId}")
+                        val bridgeClient = buildClient(epoch)
+                        clientMutex.withLock {
+                            client?.disconnect()
+                            client = bridgeClient
+                        }
+                        bridgeClient.connect(
+                            url = url,
+                            pairingRecord = pairing,
+                            phoneIdentityState = phoneIdentity,
+                            trustedMacRecord = state.value.trustedMacRegistry.records[pairing.macDeviceId],
+                            accessMode = state.value.accessMode,
+                        )
+                        Log.d(TAG, "websocket+handshake ok epoch=$epoch url=$url")
+                        rememberSuccessfulTransport(url)
+                        initializeSession()
+                        Log.d(TAG, "initialize ok epoch=$epoch")
+                        listModels()
+                        Log.d(TAG, "model/list ok epoch=$epoch")
+                        listThreads()
+                        Log.d(TAG, "thread/list ok epoch=$epoch")
+                        updateState {
+                            copy(
+                                connectionPhase = ConnectionPhase.CONNECTED,
+                                lastErrorMessage = null,
+                                selectedThreadId = selectedThreadId ?: threads.firstOrNull()?.id,
+                            )
+                        }
+                        state.value.selectedThreadId?.let { threadId ->
+                            loadThreadHistory(threadId)
+                        }
+                        return@launch
+                    } catch (failure: Throwable) {
+                        Log.e(TAG, "connectActivePairing failed epoch=$epoch url=$url", failure)
+                        lastFailure = failure
+                    }
+                }
+
+                updateState {
+                    copy(
+                        connectionPhase = ConnectionPhase.OFFLINE,
+                        lastErrorMessage = lastFailure?.message ?: "Could not connect to the Remodex bridge.",
+                    )
+                }
+            } finally {
+                isConnectInFlight.set(false)
             }
         }
     }
@@ -348,6 +377,10 @@ class RemodexRepository(context: Context) {
         scope.launch {
             loadThreadHistory(threadId)
         }
+    }
+
+    fun clearSelectedThread() {
+        updateState { copy(selectedThreadId = null, pendingApproval = null) }
     }
 
     fun createThread(preferredProjectPath: String? = null) {
@@ -448,17 +481,107 @@ class RemodexRepository(context: Context) {
         }
     }
 
-    fun sendMessage(text: String, usePlanMode: Boolean = false) {
+    fun resumeQueuedDrafts(threadId: String) {
+        updateState {
+            copy(queuePauseMessageByThread = queuePauseMessageByThread - threadId)
+        }
+        checkAndSendNextQueuedDraft(threadId)
+    }
+
+    fun steerQueuedDraft(threadId: String, draftId: String) {
         scope.launch {
-            val trimmed = text.trim()
-            if (trimmed.isEmpty()) {
+            val draft = state.value.queuedTurnDraftsByThread[threadId]
+                ?.firstOrNull { it.id == draftId }
+                ?: return@launch
+            val payload = draft.toDispatchPayload()
+            var activeTurnId = state.value.activeTurnIdByThread[threadId]
+                ?: resolveActiveTurnId(threadId)
+
+            if (activeTurnId.isNullOrBlank()) {
+                dispatchDraftTurn(
+                    threadId = threadId,
+                    text = payload.text,
+                    attachments = payload.attachments,
+                    skillMentions = payload.skillMentions,
+                    usePlanMode = payload.usePlanMode,
+                )
+                removeQueuedDraft(threadId, draftId)
                 return@launch
             }
 
-            val selectedModel = state.value.availableModels.firstOrNull {
-                it.id == state.value.selectedModelId || it.model == state.value.selectedModelId
-            } ?: state.value.availableModels.firstOrNull { it.isDefault }
-                ?: state.value.availableModels.firstOrNull()
+            appendLocalMessage(
+                ChatMessage(
+                    threadId = threadId,
+                    role = MessageRole.USER,
+                    text = payload.text,
+                    attachments = payload.attachments,
+                    orderIndex = nextOrderIndex(),
+                ),
+            )
+
+            val steerBaseParams = buildJsonObject(
+                "threadId" to JsonPrimitive(threadId)
+            )
+
+            var includeStructuredSkillItems = payload.skillMentions.isNotEmpty()
+            var didRetryWithRefreshedTurnId = false
+
+            runCatching {
+                while (true) {
+                    val params = steerBaseParams.copyWith(
+                        "expectedTurnId" to JsonPrimitive(activeTurnId),
+                        "input" to buildTurnInputItems(
+                            text = payload.text,
+                            attachments = payload.attachments,
+                            skillMentions = payload.skillMentions,
+                            includeStructuredSkillItems = includeStructuredSkillItems,
+                        ),
+                    )
+                    try {
+                        requestWithSandboxFallback("turn/steer", params)
+                        break
+                    } catch (failure: Throwable) {
+                        if (includeStructuredSkillItems && shouldRetryTurnStartWithoutSkillItems(failure)) {
+                            includeStructuredSkillItems = false
+                            continue
+                        }
+                        if (!didRetryWithRefreshedTurnId && shouldRetrySteerWithRefreshedTurnId(failure)) {
+                            val refreshedTurnId = resolveActiveTurnId(threadId)
+                            if (!refreshedTurnId.isNullOrBlank() && refreshedTurnId != activeTurnId) {
+                                activeTurnId = refreshedTurnId
+                                didRetryWithRefreshedTurnId = true
+                                continue
+                            }
+                        }
+                        throw failure
+                    }
+                }
+            }.onSuccess {
+                removeQueuedDraft(threadId, draftId)
+            }.onFailure { failure ->
+                removeLatestMatchingUserMessage(
+                    threadId = threadId,
+                    text = payload.text,
+                    attachments = payload.attachments,
+                )
+                updateError(failure.message ?: "Unable to steer queued draft.")
+            }
+        }
+    }
+
+    fun sendMessage(
+        text: String,
+        attachments: List<CodexImageAttachment> = emptyList(),
+        skillMentions: List<CodexTurnSkillMention> = emptyList(),
+        usePlanMode: Boolean = false,
+    ) {
+        scope.launch {
+            val trimmed = text.trim()
+            if (trimmed.isEmpty() && attachments.isEmpty()) {
+                return@launch
+            }
+
+            val selectedModel = state.value.selectedTurnStartModel()
             if (usePlanMode && selectedModel == null) {
                 updateError("Plan mode requires an available model before starting a turn.")
                 return@launch
@@ -469,12 +592,27 @@ class RemodexRepository(context: Context) {
                 return@launch
             }
 
-            if (state.value.runningThreadIds.contains(threadId)) {
+            val queueStatus = state.value.threadQueueStatus(threadId)
+            if (queueStatus.blocksImmediateSend) {
                 updateState {
                     val currentQueue = queuedTurnDraftsByThread[threadId].orEmpty()
                     copy(
-                        queuedTurnDraftsByThread = queuedTurnDraftsByThread + (threadId to (currentQueue + QueuedTurnDraft(text = trimmed, usePlanMode = usePlanMode)))
+                        queuedTurnDraftsByThread = queuedTurnDraftsByThread + (
+                            threadId to (
+                                currentQueue + QueuedTurnDraft(
+                                    text = trimmed,
+                                    attachments = attachments,
+                                    skillMentions = skillMentions,
+                                    usePlanMode = usePlanMode,
+                                )
+                            )
+                        )
                     )
+                }
+                if (queueStatus.shouldSurfacePausedNotice) {
+                    updateState {
+                        copy(lastErrorMessage = "Queue paused. Resume queued drafts to continue sending.")
+                    }
                 }
                 return@launch
             }
@@ -484,6 +622,7 @@ class RemodexRepository(context: Context) {
                     threadId = threadId,
                     role = MessageRole.USER,
                     text = trimmed,
+                    attachments = attachments,
                     orderIndex = nextOrderIndex(),
                 ),
             )
@@ -493,38 +632,15 @@ class RemodexRepository(context: Context) {
                     lastErrorMessage = null,
                 )
             }
-
-            val inputItems = JsonArray(
-                listOf(
-                    JsonObject(
-                        mapOf(
-                            "type" to JsonPrimitive("text"),
-                            "text" to JsonPrimitive(trimmed),
-                        ),
-                    ),
-                ),
-            )
-            val params = buildJsonObject(
-                "threadId" to JsonPrimitive(threadId),
-                "input" to inputItems,
-                "model" to state.value.selectedModelId?.let(::JsonPrimitive),
-                "effort" to state.value.selectedReasoningEffort?.let(::JsonPrimitive),
-                "collaborationMode" to if (usePlanMode && selectedModel != null) {
-                    buildJsonObject(
-                        "mode" to JsonPrimitive("plan"),
-                        "settings" to buildJsonObject(
-                            "model" to JsonPrimitive(selectedModel.model),
-                            "reasoning_effort" to state.value.selectedReasoningEffort?.let(::JsonPrimitive),
-                            "developer_instructions" to JsonNull,
-                        ),
-                    )
-                } else {
-                    null
-                },
-            )
-
             runCatching {
-                requestWithSandboxFallback("turn/start", params)
+                executeTurnStartRequest(
+                    threadId = threadId,
+                    text = trimmed,
+                    attachments = attachments,
+                    skillMentions = skillMentions,
+                    usePlanMode = usePlanMode,
+                    selectedModel = selectedModel,
+                )
             }.onFailure { failure ->
                 updateState {
                     copy(
@@ -549,8 +665,12 @@ class RemodexRepository(context: Context) {
         scope.launch {
             val threadId = state.value.selectedThreadId ?: return@launch
             val turnId = state.value.activeTurnIdByThread[threadId]
+                ?: resolveActiveTurnId(threadId)
             if (turnId.isNullOrBlank()) {
                 return@launch
+            }
+            updateState {
+                copy(activeTurnIdByThread = activeTurnIdByThread + (threadId to turnId))
             }
             runCatching {
                 activeClient().sendRequest(
@@ -564,6 +684,22 @@ class RemodexRepository(context: Context) {
                 )
             }.onFailure {
                 updateError(it.message ?: "Unable to stop the active turn.")
+            }
+        }
+    }
+
+    fun refreshThreadsIfConnected() {
+        scope.launch {
+            if (!state.value.isConnected) {
+                return@launch
+            }
+            runCatching<Unit> {
+                listThreads(updatePhase = false)
+                state.value.selectedThreadId?.let { threadId ->
+                    loadThreadHistory(threadId)
+                }
+            }.onFailure { failure ->
+                updateError(failure.message ?: "Unable to refresh chats.")
             }
         }
     }
@@ -643,7 +779,12 @@ class RemodexRepository(context: Context) {
             val id = obj.string("id") ?: return@mapNotNull null
             val name = obj.string("name") ?: return@mapNotNull null
             val description = obj.string("description")
-            SkillMetadata(id = id, name = name, description = description)
+            SkillMetadata(
+                id = id,
+                name = name,
+                description = description,
+                path = obj.string("path"),
+            )
         }
     }
 
@@ -680,7 +821,18 @@ class RemodexRepository(context: Context) {
             untrackedCount = untrackedCount,
             repoRoot = repoRoot
         )
-        updateState { copy(gitRepoSyncResult = result) }
+        val threadId = state.value.selectedThreadId?.takeIf { selectedId ->
+            state.value.threads.firstOrNull { it.id == selectedId }?.cwd == cwd
+        } ?: state.value.threads.firstOrNull { it.cwd == cwd }?.id
+        updateState {
+            copy(
+                gitRepoSyncByThread = if (threadId == null) {
+                    gitRepoSyncByThread
+                } else {
+                    gitRepoSyncByThread + (threadId to result)
+                }
+            )
+        }
         return result
     }
 
@@ -781,8 +933,10 @@ class RemodexRepository(context: Context) {
         }
     }
 
-    private suspend fun listThreads() {
-        updateState { copy(connectionPhase = ConnectionPhase.LOADING_CHATS) }
+    private suspend fun listThreads(updatePhase: Boolean = true) {
+        if (updatePhase) {
+            updateState { copy(connectionPhase = ConnectionPhase.LOADING_CHATS) }
+        }
         val activeThreads = fetchThreads(archived = false)
         val archivedThreads = runCatching { fetchThreads(archived = true) }.getOrDefault(emptyList())
         val combined = (activeThreads + archivedThreads)
@@ -792,7 +946,7 @@ class RemodexRepository(context: Context) {
             copy(
                 threads = combined,
                 selectedThreadId = selectedThreadId ?: combined.firstOrNull()?.id,
-                connectionPhase = ConnectionPhase.CONNECTED,
+                connectionPhase = if (updatePhase) ConnectionPhase.CONNECTED else connectionPhase,
             )
         }
     }
@@ -832,13 +986,70 @@ class RemodexRepository(context: Context) {
         )?.jsonObjectOrNull() ?: return
         val threadObject = result["thread"]?.jsonObjectOrNull() ?: return
         val history = decodeMessagesFromThreadRead(threadId, threadObject)
+        val activeTurnId = resolveActiveTurnId(threadObject)
         if (history.isNotEmpty()) {
             updateState {
                 copy(
                     messagesByThread = messagesByThread + (threadId to history),
+                    activeTurnIdByThread = if (activeTurnId == null) {
+                        activeTurnIdByThread
+                    } else {
+                        activeTurnIdByThread + (threadId to activeTurnId)
+                    },
+                    runningThreadIds = if (activeTurnId == null) {
+                        runningThreadIds - threadId
+                    } else {
+                        runningThreadIds + threadId
+                    },
+                )
+            }
+        } else if (activeTurnId != null) {
+            updateState {
+                copy(
+                    activeTurnIdByThread = activeTurnIdByThread + (threadId to activeTurnId),
+                    runningThreadIds = runningThreadIds + threadId,
                 )
             }
         }
+    }
+
+    private suspend fun resolveActiveTurnId(threadId: String): String? {
+        val result = activeClient().sendRequest(
+            method = "thread/read",
+            params = JsonObject(
+                mapOf(
+                    "threadId" to JsonPrimitive(threadId),
+                    "includeTurns" to JsonPrimitive(true),
+                ),
+            ),
+        )?.jsonObjectOrNull() ?: return null
+        val threadObject = result["thread"]?.jsonObjectOrNull() ?: return null
+        return resolveActiveTurnId(threadObject)
+    }
+
+    private fun resolveActiveTurnId(threadObject: JsonObject): String? {
+        val turns = threadObject["turns"]?.jsonArrayOrNull().orEmpty()
+        if (turns.isEmpty()) {
+            return null
+        }
+        val activeTurn = turns
+            .mapNotNull(JsonElement::jsonObjectOrNull)
+            .asReversed()
+            .firstOrNull { turn ->
+                turn.bool("isRunning") == true ||
+                    turn.bool("isActive") == true ||
+                    turn.bool("completed") == false ||
+                    turn.string("status")?.lowercase() in setOf("inprogress", "running", "active", "started", "pending") ||
+                    (
+                        turn.string("id") != null &&
+                            turn["completedAt"] == null &&
+                            turn["completed_at"] == null &&
+                            turn["endedAt"] == null &&
+                            turn["ended_at"] == null
+                        )
+            }
+        return activeTurn?.string("id")
+            ?: turns.lastOrNull()?.jsonObjectOrNull()?.string("id")
     }
 
     private suspend fun requestWithSandboxFallback(method: String, baseParams: JsonObject): JsonElement? {
@@ -878,6 +1089,96 @@ class RemodexRepository(context: Context) {
             }
         }
         throw lastError ?: IllegalStateException("$method failed")
+    }
+
+    private fun buildTurnInputItems(
+        text: String,
+        attachments: List<CodexImageAttachment>,
+        skillMentions: List<CodexTurnSkillMention>,
+        includeStructuredSkillItems: Boolean,
+    ): JsonArray {
+        return JsonArray(
+            buildList {
+                attachments.forEach { attachment ->
+                    val payloadDataURL = attachment.payloadDataURL?.trim().orEmpty()
+                    if (payloadDataURL.isNotEmpty()) {
+                        add(
+                            JsonObject(
+                                mapOf(
+                                    "type" to JsonPrimitive("image"),
+                                    "image_url" to JsonPrimitive(payloadDataURL),
+                                ),
+                            ),
+                        )
+                    }
+                }
+                if (text.isNotEmpty()) {
+                    add(
+                        JsonObject(
+                            mapOf(
+                                "type" to JsonPrimitive("text"),
+                                "text" to JsonPrimitive(text),
+                            ),
+                        ),
+                    )
+                }
+                if (includeStructuredSkillItems) {
+                    skillMentions.forEach { mention ->
+                        val normalizedId = mention.id.trim()
+                        if (normalizedId.isEmpty()) {
+                            return@forEach
+                        }
+                        add(
+                            JsonObject(
+                                buildMap {
+                                    put("type", JsonPrimitive("skill"))
+                                    put("id", JsonPrimitive(normalizedId))
+                                    mention.name?.trim()?.takeIf(String::isNotEmpty)?.let {
+                                        put("name", JsonPrimitive(it))
+                                    }
+                                    mention.path?.trim()?.takeIf(String::isNotEmpty)?.let {
+                                        put("path", JsonPrimitive(it))
+                                    }
+                                },
+                            ),
+                        )
+                    }
+                }
+            },
+        )
+    }
+
+    private fun shouldRetryTurnStartWithoutSkillItems(error: Throwable): Boolean {
+        val message = error.message?.lowercase().orEmpty()
+        if (!message.contains("skill")) {
+            return false
+        }
+        return message.contains("unknown")
+            || message.contains("unsupported")
+            || message.contains("invalid")
+            || message.contains("expected")
+            || message.contains("unrecognized")
+            || message.contains("type")
+            || message.contains("field")
+    }
+
+    private fun shouldRetrySteerWithRefreshedTurnId(error: Throwable): Boolean {
+        val message = error.message?.lowercase().orEmpty()
+        val hints = listOf(
+            "turn not found",
+            "no active turn",
+            "not in progress",
+            "not running",
+            "already completed",
+            "already finished",
+            "invalid turn",
+            "no such turn",
+            "not active",
+            "does not exist",
+            "cannot interrupt",
+            "expectedturnid",
+        )
+        return hints.any(message::contains)
     }
 
     private fun shouldRetryForFallback(message: String): Boolean {
@@ -1442,6 +1743,25 @@ class RemodexRepository(context: Context) {
         }
     }
 
+    private fun removeLatestMatchingUserMessage(
+        threadId: String,
+        text: String,
+        attachments: List<CodexImageAttachment>,
+    ) {
+        updateState {
+            val existing = messagesByThread[threadId].orEmpty().toMutableList()
+            val index = existing.indexOfLast { message ->
+                message.role == MessageRole.USER &&
+                    message.text == text &&
+                    message.attachments == attachments
+            }
+            if (index >= 0) {
+                existing.removeAt(index)
+            }
+            copy(messagesByThread = messagesByThread + (threadId to existing))
+        }
+    }
+
     private fun upsertStreamingMessage(
         threadId: String,
         role: MessageRole,
@@ -1900,9 +2220,123 @@ class RemodexRepository(context: Context) {
     }
 
     private fun checkAndSendNextQueuedDraft(threadId: String) {
-        val nextDraft = state.value.queuedTurnDraftsByThread[threadId]?.firstOrNull() ?: return
-        removeQueuedDraft(threadId, nextDraft.id)
-        sendMessage(nextDraft.text, nextDraft.usePlanMode)
+        when (val decision = state.value.queueDrainDecision(threadId)) {
+            QueueDrainDecision.Skip -> return
+            is QueueDrainDecision.Defer -> {
+                queueCoordinator.restoreDeferredAttempt(threadId, decision.attempt)
+                return
+            }
+            is QueueDrainDecision.Dispatch -> {
+                queueCoordinator.dispatchAttempt(threadId, decision.attempt)
+            }
+        }
+    }
+
+    private suspend fun dispatchDraftTurn(
+        threadId: String,
+        text: String,
+        attachments: List<CodexImageAttachment>,
+        skillMentions: List<CodexTurnSkillMention>,
+        usePlanMode: Boolean,
+    ) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty() && attachments.isEmpty()) {
+            return
+        }
+        val selectedModel = state.value.selectedTurnStartModel()
+        if (usePlanMode && selectedModel == null) {
+            throw IllegalStateException("Plan mode requires an available model before starting a turn.")
+        }
+        appendLocalMessage(
+            ChatMessage(
+                threadId = threadId,
+                role = MessageRole.USER,
+                text = trimmed,
+                attachments = attachments,
+                orderIndex = nextOrderIndex(),
+            ),
+        )
+        updateState {
+            copy(
+                runningThreadIds = runningThreadIds + threadId,
+                lastErrorMessage = null,
+            )
+        }
+        try {
+            executeTurnStartRequest(
+                threadId = threadId,
+                text = trimmed,
+                attachments = attachments,
+                skillMentions = skillMentions,
+                usePlanMode = usePlanMode,
+                selectedModel = selectedModel,
+            )
+        } catch (failure: Throwable) {
+            updateState {
+                copy(
+                    runningThreadIds = runningThreadIds - threadId,
+                    lastErrorMessage = failure.message ?: "Unable to send message.",
+                )
+            }
+            throw failure
+        }
+    }
+
+    private suspend fun executeTurnStartRequest(
+        threadId: String,
+        text: String,
+        attachments: List<CodexImageAttachment>,
+        skillMentions: List<CodexTurnSkillMention>,
+        usePlanMode: Boolean,
+        selectedModel: ModelOption?,
+    ) {
+        var includeStructuredSkillItems = skillMentions.isNotEmpty()
+        while (true) {
+            val params = buildJsonObject(
+                "threadId" to JsonPrimitive(threadId),
+                "input" to buildTurnInputItems(
+                    text = text,
+                    attachments = attachments,
+                    skillMentions = skillMentions,
+                    includeStructuredSkillItems = includeStructuredSkillItems,
+                ),
+                "model" to state.value.selectedModelId?.let(::JsonPrimitive),
+                "effort" to state.value.selectedReasoningEffort?.let(::JsonPrimitive),
+                "collaborationMode" to state.value.turnStartCollaborationMode(
+                    usePlanMode = usePlanMode,
+                    selectedModel = selectedModel,
+                ),
+            )
+            try {
+                requestWithSandboxFallback("turn/start", params)
+                return
+            } catch (failure: Throwable) {
+                if (includeStructuredSkillItems && shouldRetryTurnStartWithoutSkillItems(failure)) {
+                    includeStructuredSkillItems = false
+                    continue
+                }
+                throw failure
+            }
+        }
+    }
+
+    private fun prependQueuedDraft(
+        threadId: String,
+        draft: QueuedTurnDraft,
+    ) {
+        updateState {
+            copy(queuedTurnDraftsByThread = restoreQueuedDraft(threadId, draft))
+        }
+    }
+
+    private fun pauseQueuedDrafts(threadId: String, message: String) {
+        val outcome = queuePauseOutcome(threadId, message)
+        updateState {
+            copy(
+                queuePauseMessageByThread = queuePauseMessageByThread + (outcome.threadId to outcome.message),
+                lastErrorMessage = outcome.userVisibleError,
+            )
+        }
     }
 
     private fun orderedTransportUrls(pairingRecord: PairingRecord): List<String> {
