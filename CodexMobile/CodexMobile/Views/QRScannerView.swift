@@ -11,6 +11,8 @@ struct QRScannerView: View {
     let onScan: (CodexPairingQRPayload) -> Void
 
     @State private var scannerError: String?
+    @State private var lastRejectedCode: String?
+    @State private var lastRejectedMessage: String?
     @State private var hasCameraPermission = false
     @State private var isCheckingPermission = true
 
@@ -101,44 +103,79 @@ struct QRScannerView: View {
 
     private func handleScanResult(_ code: String, resetScanLock: @escaping () -> Void) {
         guard let data = code.data(using: .utf8) else {
-            scannerError = "QR code contains invalid text encoding."
-            resetScanLock()
+            rejectScan(
+                code: code,
+                message: "QR code contains invalid text encoding.",
+                resetScanLock: resetScanLock
+            )
             return
         }
 
         let decoder = JSONDecoder()
         guard let payload = try? decoder.decode(CodexPairingQRPayload.self, from: data) else {
-            scannerError = "Not a valid secure pairing code. Make sure you're scanning a QR from the latest Remodex bridge."
-            resetScanLock()
+            rejectScan(
+                code: code,
+                message: "Not a valid secure pairing code. Make sure you're scanning a QR from the latest Remodex bridge.",
+                resetScanLock: resetScanLock
+            )
             return
         }
 
         guard payload.v == codexPairingQRVersion else {
-            scannerError = "This QR code uses an unsupported pairing format. Update the iPhone app or the Mac bridge and try again."
-            resetScanLock()
+            rejectScan(
+                code: code,
+                message: "This QR code uses an unsupported pairing format. Update the iPhone app or the Mac bridge and try again.",
+                resetScanLock: resetScanLock
+            )
             return
         }
 
         guard !payload.bridgeId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            scannerError = "QR code is missing the bridge ID. Re-generate the code from the bridge."
-            resetScanLock()
+            rejectScan(
+                code: code,
+                message: "QR code is missing the bridge ID. Re-generate the code from the bridge.",
+                resetScanLock: resetScanLock
+            )
             return
         }
 
         guard !payload.transportCandidates.isEmpty else {
-            scannerError = "QR code is missing bridge transports. Re-generate the code from the bridge."
-            resetScanLock()
+            rejectScan(
+                code: code,
+                message: "QR code is missing bridge transports. Re-generate the code from the bridge.",
+                resetScanLock: resetScanLock
+            )
             return
         }
 
         let expiryDate = Date(timeIntervalSince1970: TimeInterval(payload.expiresAt) / 1000)
         if expiryDate.addingTimeInterval(codexSecureClockSkewToleranceSeconds) < Date() {
-            scannerError = "This pairing QR code has expired. Generate a new one from the Mac bridge."
-            resetScanLock()
+            rejectScan(
+                code: code,
+                message: "This pairing QR code has expired. Generate a new one from the Mac bridge.",
+                resetScanLock: resetScanLock
+            )
             return
         }
 
+        lastRejectedCode = nil
+        lastRejectedMessage = nil
+        HapticFeedback.shared.triggerImpactFeedback(style: .heavy)
         onScan(payload)
+    }
+
+    private func rejectScan(
+        code: String,
+        message: String,
+        resetScanLock: @escaping () -> Void
+    ) {
+        let isDuplicateRejection = lastRejectedCode == code && lastRejectedMessage == message
+        lastRejectedCode = code
+        lastRejectedMessage = message
+        if !isDuplicateRejection {
+            scannerError = message
+        }
+        resetScanLock()
     }
 }
 
@@ -223,7 +260,6 @@ private class QRCameraUIView: UIView, AVCaptureMetadataOutputObjectsDelegate {
         }
 
         hasScanned = true
-        HapticFeedback.shared.triggerImpactFeedback(style: .heavy)
         onScan?(code)
     }
 

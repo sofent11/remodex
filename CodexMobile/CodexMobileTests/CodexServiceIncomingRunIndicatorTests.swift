@@ -471,6 +471,136 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
         XCTAssertTrue(service.hasSavedBridgePairing)
     }
 
+    func testUnpairClearsSavedPairingAndTrustedMacRecord() async {
+        let service = makeService()
+        let macDeviceId = "mac-\(UUID().uuidString)"
+        let macIdentityPublicKey = Data("trusted-mac-key".utf8).base64EncodedString()
+
+        SecureStore.writeString("bridge-\(UUID().uuidString)", for: CodexSecureKeys.pairingBridgeId)
+        SecureStore.writeCodable(
+            [CodexTransportCandidate(kind: "local_ipv4", url: "ws://192.168.0.10:8765/bridge/test", label: nil)],
+            for: CodexSecureKeys.pairingTransportCandidates
+        )
+        SecureStore.writeString(macDeviceId, for: CodexSecureKeys.pairingMacDeviceId)
+        SecureStore.writeString(macIdentityPublicKey, for: CodexSecureKeys.pairingMacIdentityPublicKey)
+        SecureStore.writeCodable(
+            CodexTrustedMacRegistry(
+                records: [
+                    macDeviceId: CodexTrustedMacRecord(
+                        macDeviceId: macDeviceId,
+                        macIdentityPublicKey: macIdentityPublicKey,
+                        lastPairedAt: .now
+                    )
+                ]
+            ),
+            for: CodexSecureKeys.trustedMacRegistry
+        )
+        defer {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingBridgeId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingTransportCandidates)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacDeviceId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacIdentityPublicKey)
+            SecureStore.deleteValue(for: CodexSecureKeys.trustedMacRegistry)
+        }
+
+        service.pairedBridgeId = SecureStore.readString(for: CodexSecureKeys.pairingBridgeId)
+        service.pairedTransportCandidates = SecureStore.readCodable(
+            [CodexTransportCandidate].self,
+            for: CodexSecureKeys.pairingTransportCandidates
+        ) ?? []
+        service.pairedMacDeviceId = SecureStore.readString(for: CodexSecureKeys.pairingMacDeviceId)
+        service.pairedMacIdentityPublicKey = SecureStore.readString(for: CodexSecureKeys.pairingMacIdentityPublicKey)
+        service.trustedMacRegistry = SecureStore.readCodable(
+            CodexTrustedMacRegistry.self,
+            for: CodexSecureKeys.trustedMacRegistry
+        ) ?? .empty
+        service.secureConnectionState = .trustedMac
+
+        await service.unpair()
+
+        XCTAssertFalse(service.hasSavedBridgePairing)
+        XCTAssertNil(service.pairedMacDeviceId)
+        XCTAssertNil(service.pairedMacIdentityPublicKey)
+        XCTAssertEqual(service.secureConnectionState, .notPaired)
+        XCTAssertTrue(service.trustedMacRegistry.records.isEmpty)
+        XCTAssertNil(SecureStore.readString(for: CodexSecureKeys.pairingBridgeId))
+        XCTAssertNil(SecureStore.readString(for: CodexSecureKeys.pairingMacDeviceId))
+        let storedRegistry = SecureStore.readCodable(
+            CodexTrustedMacRegistry.self,
+            for: CodexSecureKeys.trustedMacRegistry
+        ) ?? .empty
+        XCTAssertTrue(storedRegistry.records.isEmpty)
+    }
+
+    func testRememberBridgePairingPersistsAllTransportCandidates() {
+        let service = makeService()
+        let payload = CodexPairingQRPayload(
+            v: codexPairingQRVersion,
+            bridgeId: "bridge-\(UUID().uuidString)",
+            macDeviceId: "mac-\(UUID().uuidString)",
+            macIdentityPublicKey: Data("mac-public-key".utf8).base64EncodedString(),
+            transportCandidates: [
+                CodexTransportCandidate(
+                    kind: "local_ipv4",
+                    url: "ws://192.168.0.10:8765/bridge/test",
+                    label: "Home LAN"
+                ),
+                CodexTransportCandidate(
+                    kind: "tailnet",
+                    url: "ws://remodex-host.tailnet.ts.net:8765/bridge/test",
+                    label: "Tailscale"
+                ),
+            ],
+            expiresAt: Int64(Date().addingTimeInterval(300).timeIntervalSince1970 * 1000)
+        )
+        defer {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingBridgeId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingTransportCandidates)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacDeviceId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacIdentityPublicKey)
+            SecureStore.deleteValue(for: CodexSecureKeys.trustedMacRegistry)
+        }
+
+        service.rememberBridgePairing(payload)
+
+        XCTAssertEqual(service.pairedTransportCandidates, payload.transportCandidates)
+        let storedCandidates = SecureStore.readCodable(
+            [CodexTransportCandidate].self,
+            for: CodexSecureKeys.pairingTransportCandidates
+        )
+        XCTAssertEqual(storedCandidates, payload.transportCandidates)
+    }
+
+    func testPreferredTransportURLOverridesReconnectOrdering() {
+        let service = makeService()
+        service.pairedTransportCandidates = [
+            CodexTransportCandidate(kind: "local_ipv4", url: "ws://192.168.0.10:8765/bridge/test", label: "Home"),
+            CodexTransportCandidate(kind: "tailnet", url: "ws://remodex-host.tailnet.ts.net:8765/bridge/test", label: "Tailscale"),
+            CodexTransportCandidate(kind: "local_hostname", url: "ws://remodex.local:8765/bridge/test", label: "Hostname"),
+        ]
+        service.lastSuccessfulTransportURL = "ws://192.168.0.10:8765/bridge/test"
+
+        service.setPreferredTransportURL("ws://remodex-host.tailnet.ts.net:8765/bridge/test")
+
+        XCTAssertEqual(
+            service.orderedTransportCandidateURLs,
+            [
+                "ws://remodex-host.tailnet.ts.net:8765/bridge/test",
+                "ws://192.168.0.10:8765/bridge/test",
+                "ws://remodex.local:8765/bridge/test",
+            ]
+        )
+        XCTAssertEqual(
+            SecureStore.readString(for: CodexSecureKeys.pairingPreferredTransportURL),
+            "ws://remodex-host.tailnet.ts.net:8765/bridge/test"
+        )
+        defer {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
+        }
+    }
+
     func testRecoverableTimeoutMapsToFriendlyFailureMessage() {
         let service = makeService()
 

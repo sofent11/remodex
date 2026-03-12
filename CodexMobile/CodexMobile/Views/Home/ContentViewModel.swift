@@ -87,15 +87,29 @@ final class ContentViewModel {
         }
     }
 
-    // Lets the manual QR flow take over instead of competing with the foreground reconnect loop.
-    func stopAutoReconnectForManualScan(codex: CodexService) async {
+    func stopForegroundAutoReconnect(
+        codex: CodexService,
+        clearLastErrorMessage: Bool
+    ) async {
         codex.shouldAutoReconnectOnForeground = false
         codex.connectionRecoveryState = .idle
-        codex.lastErrorMessage = nil
+        if clearLastErrorMessage {
+            codex.lastErrorMessage = nil
+        }
 
         while isRunningForegroundReconnectLoop || codex.isConnecting {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+    }
+
+    // Lets the manual QR flow take over instead of competing with the foreground reconnect loop.
+    func stopAutoReconnectForManualScan(codex: CodexService) async {
+        await stopForegroundAutoReconnect(codex: codex, clearLastErrorMessage: true)
+    }
+
+    // Keeps Settings from implicitly restarting a reconnect loop the user did not request.
+    func stopAutoReconnectForSettings(codex: CodexService) async {
+        await stopForegroundAutoReconnect(codex: codex, clearLastErrorMessage: false)
     }
 
     // Attempts one automatic connection on app launch using the saved bridge pairing.

@@ -123,8 +123,13 @@ extension CodexService {
 
     // Clears the remembered bridge pairing when the remote Mac session is gone for good.
     func clearSavedBridgePairing() {
+        if let pairedMacDeviceId = normalizedPairedMacDeviceId {
+            trustedMacRegistry.records.removeValue(forKey: pairedMacDeviceId)
+            SecureStore.writeCodable(trustedMacRegistry, for: CodexSecureKeys.trustedMacRegistry)
+        }
         SecureStore.deleteValue(for: CodexSecureKeys.pairingBridgeId)
         SecureStore.deleteValue(for: CodexSecureKeys.pairingTransportCandidates)
+        SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
         SecureStore.deleteValue(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
         SecureStore.deleteValue(for: CodexSecureKeys.pairingMacDeviceId)
         SecureStore.deleteValue(for: CodexSecureKeys.pairingMacIdentityPublicKey)
@@ -132,6 +137,7 @@ extension CodexService {
         SecureStore.deleteValue(for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq)
         pairedBridgeId = nil
         pairedTransportCandidates = []
+        preferredTransportURL = nil
         lastSuccessfulTransportURL = nil
         pairedMacDeviceId = nil
         pairedMacIdentityPublicKey = nil
@@ -139,6 +145,13 @@ extension CodexService {
         lastAppliedBridgeOutboundSeq = 0
         secureConnectionState = .notPaired
         secureMacFingerprint = nil
+    }
+
+    // Explicit user action that drops the live connection and forgets the current pairing.
+    func unpair() async {
+        await disconnect()
+        clearSavedBridgePairing()
+        lastErrorMessage = nil
     }
 
     func initializeSession() async throws {

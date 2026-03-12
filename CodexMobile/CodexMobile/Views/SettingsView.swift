@@ -11,8 +11,10 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("codex.appFontStyle") private var appFontStyleRawValue = AppFont.defaultStoredStyleRawValue
+    @State private var isPerformingConnectionAction = false
 
     private let runtimeAutoValue = "__AUTO__"
+    private let transportAutoValue = "__AUTO_TRANSPORT__"
 
     var body: some View {
         ScrollView {
@@ -104,6 +106,32 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if availableTransportCandidates.count > 1 {
+                HStack {
+                    Text("Transport")
+                    Spacer()
+                    Picker("Transport", selection: preferredTransportSelection) {
+                        Text("Auto").tag(transportAutoValue)
+                        ForEach(availableTransportCandidates, id: \.url) { candidate in
+                            Text(codex.displayTitle(for: candidate)).tag(candidate.url)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .tint(.cyan)
+                }
+
+                if let candidate = selectedPreferredTransportCandidate {
+                    Text("Current preference: \(codex.displayTitle(for: candidate))")
+                        .font(AppFont.caption())
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Current preference: Auto")
+                        .font(AppFont.caption())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if connectionPhaseShowsProgress {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -131,6 +159,15 @@ struct SettingsView: View {
                     HapticFeedback.shared.triggerImpactFeedback()
                     disconnectBridge()
                 }
+                .disabled(isPerformingConnectionAction)
+            }
+
+            if codex.hasSavedBridgePairing {
+                SettingsButton("Unpair", role: .destructive) {
+                    HapticFeedback.shared.triggerImpactFeedback()
+                    unpairBridge()
+                }
+                .disabled(isPerformingConnectionAction)
             }
         }
     }
@@ -172,12 +209,53 @@ struct SettingsView: View {
         }
     }
 
+    private var availableTransportCandidates: [CodexTransportCandidate] {
+        codex.normalizedTransportCandidates.filter { candidate in
+            guard let url = URL(string: candidate.url),
+                  let host = url.host?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !host.isEmpty else {
+                return false
+            }
+            if candidate.kind == "local_ipv4" {
+                return !host.hasPrefix("169.254.")
+            }
+            return true
+        }
+    }
+
+    private var selectedPreferredTransportCandidate: CodexTransportCandidate? {
+        guard let preferredTransportURL = codex.preferredTransportURL?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !preferredTransportURL.isEmpty else {
+            return nil
+        }
+        return availableTransportCandidates.first { $0.url == preferredTransportURL }
+    }
+
     // MARK: - Actions
 
     private func disconnectBridge() {
         Task { @MainActor in
+            guard !isPerformingConnectionAction else {
+                return
+            }
+            isPerformingConnectionAction = true
+            defer { isPerformingConnectionAction = false }
             codex.shouldReturnHomeAfterDisconnect = true
             await codex.disconnect()
+            dismiss()
+        }
+    }
+
+    private func unpairBridge() {
+        Task { @MainActor in
+            guard !isPerformingConnectionAction else {
+                return
+            }
+            isPerformingConnectionAction = true
+            defer { isPerformingConnectionAction = false }
+            codex.shouldReturnHomeAfterDisconnect = true
+            await codex.unpair()
             dismiss()
         }
     }
@@ -216,6 +294,17 @@ struct SettingsView: View {
         Binding(
             get: { codex.selectedAccessMode },
             set: { codex.setSelectedAccessMode($0) }
+        )
+    }
+
+    private var preferredTransportSelection: Binding<String> {
+        Binding(
+            get: {
+                selectedPreferredTransportCandidate?.url ?? transportAutoValue
+            },
+            set: { selection in
+                codex.setPreferredTransportURL(selection == transportAutoValue ? nil : selection)
+            }
         )
     }
 }

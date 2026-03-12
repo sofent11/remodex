@@ -137,6 +137,7 @@ final class CodexService {
     // Pairing persistence
     var pairedBridgeId: String?
     var pairedTransportCandidates: [CodexTransportCandidate] = []
+    var preferredTransportURL: String?
     var lastSuccessfulTransportURL: String?
     var pairedMacDeviceId: String?
     var pairedMacIdentityPublicKey: String?
@@ -266,6 +267,9 @@ final class CodexService {
             [CodexTransportCandidate].self,
             for: CodexSecureKeys.pairingTransportCandidates
         ) ?? []
+        self.preferredTransportURL = SecureStore.readString(
+            for: CodexSecureKeys.pairingPreferredTransportURL
+        )
         self.lastSuccessfulTransportURL = SecureStore.readString(
             for: CodexSecureKeys.pairingLastSuccessfulTransportURL
         )
@@ -318,14 +322,32 @@ final class CodexService {
             .sorted { lhs, rhs in
                 lhs.reconnectPriority < rhs.reconnectPriority
             }
-        guard let lastSuccessfulTransportURL = lastSuccessfulTransportURL?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty else {
-            return candidates.map(\.url)
+        guard !candidates.isEmpty else {
+            return []
         }
 
-        let preferred = candidates.filter { $0.url == lastSuccessfulTransportURL }
-        let remainder = candidates.filter { $0.url != lastSuccessfulTransportURL }
+        let preferredTransportURL = preferredTransportURL?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        let lastSuccessfulTransportURL = lastSuccessfulTransportURL?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+
+        var prioritizedURLs: [String] = []
+        if let preferredTransportURL {
+            prioritizedURLs.append(preferredTransportURL)
+        }
+        if let lastSuccessfulTransportURL, lastSuccessfulTransportURL != preferredTransportURL {
+            prioritizedURLs.append(lastSuccessfulTransportURL)
+        }
+
+        let preferred = candidates.filter { prioritizedURLs.contains($0.url) }
+            .sorted { lhs, rhs in
+                let lhsIndex = prioritizedURLs.firstIndex(of: lhs.url) ?? prioritizedURLs.count
+                let rhsIndex = prioritizedURLs.firstIndex(of: rhs.url) ?? prioritizedURLs.count
+                return lhsIndex < rhsIndex
+            }
+        let remainder = candidates.filter { !prioritizedURLs.contains($0.url) }
         return (preferred + remainder).map(\.url)
     }
 

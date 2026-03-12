@@ -55,6 +55,34 @@ extension CodexService {
         SecureStore.writeString(normalized, for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
     }
 
+    func setPreferredTransportURL(_ url: String?) {
+        let trimmed = url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalized = trimmed.isEmpty ? nil : trimmed
+        preferredTransportURL = normalized
+        if let normalized {
+            SecureStore.writeString(normalized, for: CodexSecureKeys.pairingPreferredTransportURL)
+        } else {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
+        }
+    }
+
+    func displayTitle(for candidate: CodexTransportCandidate) -> String {
+        if let label = candidate.label, !label.isEmpty {
+            return label
+        }
+
+        switch candidate.kind {
+        case "local_ipv4":
+            return "Local Network"
+        case "local_hostname":
+            return "Local Hostname"
+        case "tailnet_ipv4", "tailnet":
+            return "Tailscale"
+        default:
+            return candidate.kind.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
     func extractTurnID(from value: JSONValue?) -> String? {
         guard let object = value?.objectValue else {
             return nil

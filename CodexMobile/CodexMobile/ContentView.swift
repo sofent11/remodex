@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var selectedThread: CodexThread?
     @State private var navigationPath = NavigationPath()
     @State private var showSettings = false
+    @State private var isShowingSettingsScreen = false
     @State private var isShowingManualScanner = false
     @State private var isSearchActive = false
     @State private var pendingTransportSelection: PendingTransportSelection?
@@ -33,6 +34,9 @@ struct ContentView: View {
             }
             .onChange(of: showSettings) { _, show in
                 if show {
+                    Task {
+                        await viewModel.stopAutoReconnectForSettings(codex: codex)
+                    }
                     navigationPath.append("settings")
                     showSettings = false
                 }
@@ -71,13 +75,16 @@ struct ContentView: View {
             .onChange(of: scenePhase) { _, phase in
                 codex.setForegroundState(phase != .background)
                 if phase == .active {
+                    guard !isShowingSettingsScreen else {
+                        return
+                    }
                     Task {
                         await viewModel.attemptAutoReconnectOnForegroundIfNeeded(codex: codex)
                     }
                 }
             }
             .onChange(of: codex.shouldAutoReconnectOnForeground) { _, shouldReconnect in
-                guard shouldReconnect, scenePhase == .active else {
+                guard shouldReconnect, scenePhase == .active, !isShowingSettingsScreen else {
                     return
                 }
                 Task {
@@ -196,6 +203,22 @@ struct ContentView: View {
                     if destination == "settings" {
                         SettingsView()
                             .adaptiveNavigationBar()
+                            .onAppear {
+                                isShowingSettingsScreen = true
+                                Task {
+                                    await viewModel.stopAutoReconnectForSettings(codex: codex)
+                                }
+                            }
+                            .onDisappear {
+                                isShowingSettingsScreen = false
+                                guard codex.shouldAutoReconnectOnForeground,
+                                      scenePhase == .active else {
+                                    return
+                                }
+                                Task {
+                                    await viewModel.attemptAutoReconnectOnForegroundIfNeeded(codex: codex)
+                                }
+                            }
                     }
                 }
         }

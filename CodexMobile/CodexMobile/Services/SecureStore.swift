@@ -10,6 +10,7 @@ import Security
 enum CodexSecureKeys {
     static let pairingBridgeId = "codex.pairing.bridgeId"
     static let pairingTransportCandidates = "codex.pairing.transportCandidates"
+    static let pairingPreferredTransportURL = "codex.pairing.preferredTransportURL"
     static let pairingLastSuccessfulTransportURL = "codex.pairing.lastSuccessfulTransportURL"
     static let pairingMacDeviceId = "codex.pairing.macDeviceId"
     static let pairingMacIdentityPublicKey = "codex.pairing.macIdentityPublicKey"

@@ -251,6 +251,7 @@ extension CodexService {
         SecureStore.writeCodable(trustedMacRegistry, for: CodexSecureKeys.trustedMacRegistry)
         SecureStore.writeString(payload.bridgeId, for: CodexSecureKeys.pairingBridgeId)
         SecureStore.writeCodable(payload.transportCandidates, for: CodexSecureKeys.pairingTransportCandidates)
+        SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
         SecureStore.deleteValue(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
         SecureStore.writeString(payload.macDeviceId, for: CodexSecureKeys.pairingMacDeviceId)
         SecureStore.writeString(payload.macIdentityPublicKey, for: CodexSecureKeys.pairingMacIdentityPublicKey)
@@ -258,6 +259,7 @@ extension CodexService {
         SecureStore.writeString("0", for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq)
         pairedBridgeId = payload.bridgeId
         pairedTransportCandidates = payload.transportCandidates
+        preferredTransportURL = nil
         lastSuccessfulTransportURL = nil
         pairedMacDeviceId = payload.macDeviceId
         pairedMacIdentityPublicKey = payload.macIdentityPublicKey
