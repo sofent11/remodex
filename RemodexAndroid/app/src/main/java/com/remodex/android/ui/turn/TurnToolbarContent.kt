@@ -9,12 +9,16 @@ internal fun TurnToolbarContent(
     state: AppState,
     turnViewModel: TurnViewModel,
     onSelectAccessMode: (AccessMode) -> Unit,
-    onGitAction: (com.remodex.android.data.model.TurnGitActionKind) -> Unit,
+    onRefreshGitBranches: () -> Unit,
+    onCheckoutGitBranch: (String) -> Unit,
+    onSelectGitBaseBranch: (String) -> Unit,
 ) {
     ComposerSecondaryToolbar(
         state = state,
         turnViewModel = turnViewModel,
         onSelectAccessMode = onSelectAccessMode,
-        onGitAction = onGitAction,
+        onRefreshGitBranches = onRefreshGitBranches,
+        onCheckoutGitBranch = onCheckoutGitBranch,
+        onSelectGitBaseBranch = onSelectGitBaseBranch,
     )
 }

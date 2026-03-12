@@ -57,40 +57,7 @@ internal fun projectTimelineMessages(messages: List<ChatMessage>): List<ChatMess
 }
 
 internal fun buildTimelineRenderItems(messages: List<ChatMessage>): List<TimelineRenderItem> {
-    if (messages.isEmpty()) {
-        return emptyList()
-    }
-    val items = mutableListOf<TimelineRenderItem>()
-    var index = 0
-    while (index < messages.size) {
-        val message = messages[index]
-        val turnId = normalizedIdentifier(message.turnId)
-        if (message.role == MessageRole.USER || turnId == null) {
-            items += TimelineRenderItem.Message(message)
-            index += 1
-            continue
-        }
-
-        val sectionMessages = mutableListOf<ChatMessage>()
-        var cursor = index
-        while (cursor < messages.size) {
-            val candidate = messages[cursor]
-            if (candidate.role == MessageRole.USER || normalizedIdentifier(candidate.turnId) != turnId) {
-                break
-            }
-            sectionMessages += candidate
-            cursor += 1
-        }
-
-        if (sectionMessages.size <= 1) {
-            items += TimelineRenderItem.Message(message)
-            index += 1
-        } else {
-            items += TimelineRenderItem.TurnSection(turnId = turnId, messages = sectionMessages)
-            index = cursor
-        }
-    }
-    return items
+    return messages.map(TimelineRenderItem::Message)
 }
 
 internal fun buildTurnSectionLabels(messages: List<ChatMessage>): List<TurnSectionLabelUi> {

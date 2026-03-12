@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -56,23 +57,17 @@ internal fun TurnMessageBubble(
             ConversationBubble(
                 message = message,
                 alignment = Alignment.CenterEnd,
-                background = MaterialTheme.colorScheme.primary.copy(alpha = 0.95f),
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                fillFraction = if (grouped) 1f else 0.86f,
-                shape = RoundedCornerShape(22.dp, 22.dp, 4.dp, 22.dp),
+                background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                fillFraction = if (grouped) 1f else 0.84f,
+                shape = RoundedCornerShape(24.dp, 24.dp, 6.dp, 24.dp),
             )
         }
 
         message.role == MessageRole.ASSISTANT && message.kind == MessageKind.CHAT -> {
             NonUserMessageBlock(copyBlockText = copyBlockText) {
-                ConversationBubble(
+                AssistantMessageBlock(
                     message = message,
-                    alignment = Alignment.CenterStart,
-                    background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
-                    contentColor = MaterialTheme.colorScheme.onSurface,
-                    fillFraction = if (grouped) 1f else 0.92f,
-                    shape = RoundedCornerShape(20.dp),
-                    tonalElevation = 0.dp,
                     replyPresentation = replyPresentation,
                 )
             }
@@ -101,6 +96,43 @@ private fun NonUserMessageBlock(
 }
 
 @Composable
+private fun AssistantMessageBlock(
+    message: ChatMessage,
+    replyPresentation: ReplyPresentation? = null,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .wrapContentWidth(Alignment.Start)
+            .padding(top = 2.dp, end = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        replyPresentation?.let { presentation ->
+            StatusTag(
+                text = if (presentation == ReplyPresentation.FINAL) "Final" else "Draft",
+                containerColor = if (presentation == ReplyPresentation.FINAL) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+                contentColor = if (presentation == ReplyPresentation.FINAL) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        if (message.attachments.isNotEmpty()) {
+            MessageAttachmentsPreview(message.attachments)
+        }
+        RichMessageText(
+            text = message.text,
+            textColor = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+@Composable
 private fun ConversationBubble(
     message: ChatMessage,
     alignment: Alignment,
@@ -111,7 +143,6 @@ private fun ConversationBubble(
     tonalElevation: androidx.compose.ui.unit.Dp = 0.dp,
     replyPresentation: ReplyPresentation? = null,
 ) {
-    val usesRichText = message.role == MessageRole.ASSISTANT && message.kind == MessageKind.CHAT
     val bubbleBorder = when (replyPresentation) {
         ReplyPresentation.FINAL -> androidx.compose.foundation.BorderStroke(
             1.dp,
@@ -160,17 +191,10 @@ private fun ConversationBubble(
                     MessageAttachmentsPreview(message.attachments)
                     Spacer(Modifier.height(10.dp))
                 }
-                if (usesRichText) {
-                    RichMessageText(
-                        text = message.text,
-                        textColor = contentColor,
-                    )
-                } else {
-                    Text(
-                        text = message.text,
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                }
+                Text(
+                    text = message.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
             }
         }
     }
@@ -191,8 +215,8 @@ private fun SystemMessageCard(
         ) {
             Surface(
                 shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Border),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Border.copy(alpha = 0.5f)),
                 modifier = Modifier.fillMaxWidth(if (grouped) 1f else 0.94f),
             ) {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {

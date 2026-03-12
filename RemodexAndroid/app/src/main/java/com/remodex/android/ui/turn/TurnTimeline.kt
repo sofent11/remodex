@@ -120,8 +120,8 @@ internal fun TurnTimeline(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 140.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 148.dp),
         ) {
             if (messages.isEmpty()) {
                 item {
@@ -129,19 +129,12 @@ internal fun TurnTimeline(
                 }
             }
             items(renderItems, key = { it.key }) { item ->
-                when (item) {
-                    is TimelineRenderItem.Message -> TurnMessageBubble(
-                        message = item.message,
-                        onSubmitStructuredInput = onSubmitStructuredInput,
-                        copyBlockText = copyBlockTextByMessageId[item.message.id],
-                    )
-
-                    is TimelineRenderItem.TurnSection -> TurnSectionCard(
-                        item = item,
-                        copyBlockTextByMessageId = copyBlockTextByMessageId,
-                        onSubmitStructuredInput = onSubmitStructuredInput,
-                    )
-                }
+                val message = (item as? TimelineRenderItem.Message)?.message ?: return@items
+                TurnMessageBubble(
+                    message = message,
+                    onSubmitStructuredInput = onSubmitStructuredInput,
+                    copyBlockText = copyBlockTextByMessageId[message.id],
+                )
             }
         }
 

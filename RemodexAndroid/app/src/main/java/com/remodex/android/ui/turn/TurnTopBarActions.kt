@@ -96,20 +96,30 @@ private fun TurnGitActionsMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { expanded = true }, enabled = enabled) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    painter = painterResource(id = android.R.drawable.ic_menu_manage),
-                    contentDescription = "Git actions",
-                )
-                if (gitRepoSyncResult.state in setOf("behind_only", "diverged", "dirty_and_behind")) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .offset(x = 2.dp, y = (-2).dp)
-                            .size(8.dp)
-                            .background(MaterialTheme.colorScheme.tertiary, CircleShape),
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        ) {
+            IconButton(onClick = { expanded = true }) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        painter = painterResource(id = android.R.drawable.ic_menu_manage),
+                        contentDescription = "Git actions",
+                        tint = if (enabled) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        },
                     )
+                    if (gitRepoSyncResult.state in setOf("behind_only", "diverged", "dirty_and_behind")) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(x = 2.dp, y = (-2).dp)
+                                .size(8.dp)
+                                .background(MaterialTheme.colorScheme.tertiary, CircleShape),
+                        )
+                    }
                 }
             }
         }

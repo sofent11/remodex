@@ -2,6 +2,8 @@ package com.remodex.android.ui.turn
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -15,17 +17,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +44,7 @@ import com.remodex.android.data.model.AppState
 import com.remodex.android.data.model.ModelOption
 import com.remodex.android.ui.theme.CommandAccent
 import com.remodex.android.ui.theme.PlanAccent
+import com.remodex.android.ui.theme.monoFamily
 
 @Composable
 internal fun ComposerPrimaryToolbar(
@@ -295,7 +303,9 @@ internal fun ComposerSecondaryToolbar(
     state: AppState,
     turnViewModel: TurnViewModel,
     onSelectAccessMode: (AccessMode) -> Unit,
-    onGitAction: (com.remodex.android.data.model.TurnGitActionKind) -> Unit,
+    onRefreshGitBranches: () -> Unit,
+    onCheckoutGitBranch: (String) -> Unit,
+    onSelectGitBaseBranch: (String) -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
     AnimatedVisibility(visible = !turnViewModel.isFocused) {
@@ -382,54 +392,268 @@ internal fun ComposerSecondaryToolbar(
                     }
                 }
 
-                state.gitRepoSyncResult?.branch?.let { branch ->
-                    Box {
-                        val isDirty = state.gitRepoSyncResult?.isDirty == true
-                        val branchText = if (isDirty) "$branch*" else branch
+                BranchSelectorChip(
+                    state = state,
+                    turnViewModel = turnViewModel,
+                    onRefreshGitBranches = onRefreshGitBranches,
+                    onCheckoutGitBranch = onCheckoutGitBranch,
+                    onSelectGitBaseBranch = onSelectGitBaseBranch,
+                )
+            }
+        }
+    }
+}
 
-                        Surface(
-                            onClick = { turnViewModel.gitMenuExpanded = true },
-                            shape = RoundedCornerShape(999.dp),
-                            color = Color.Transparent,
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Icon(
-                                    painter = androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_share),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(
-                                    text = branchText,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
+@Composable
+private fun BranchSelectorChip(
+    state: AppState,
+    turnViewModel: TurnViewModel,
+    onRefreshGitBranches: () -> Unit,
+    onCheckoutGitBranch: (String) -> Unit,
+    onSelectGitBaseBranch: (String) -> Unit,
+) {
+    val branchTargets = state.gitBranchTargets ?: return
+    val currentBranch = branchTargets.currentBranch
+        .ifBlank { state.gitRepoSyncResult?.branch.orEmpty() }
+        .ifBlank { return }
+    val defaultBranch = branchTargets.defaultBranch?.trim()?.takeIf(String::isNotEmpty)
+    val selectedBaseBranch = state.selectedGitBaseBranch
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: defaultBranch
+        ?: currentBranch
+    val branches = remember(branchTargets.branches) { branchTargets.branches.distinct() }
+    val isDirty = state.gitRepoSyncResult?.isDirty == true
+    val branchText = if (isDirty) "$currentBranch*" else currentBranch
 
-                        DropdownMenu(
-                            expanded = turnViewModel.gitMenuExpanded,
-                            onDismissRequest = { turnViewModel.gitMenuExpanded = false },
-                        ) {
-                            com.remodex.android.data.model.TurnGitActionKind.entries.forEach { action ->
-                                DropdownMenuItem(
-                                    text = { Text(action.title) },
-                                    onClick = {
-                                        turnViewModel.gitMenuExpanded = false
-                                        onGitAction(action)
-                                    },
-                                )
-                            }
-                        }
+    Surface(
+        onClick = { turnViewModel.gitMenuExpanded = true },
+        shape = RoundedCornerShape(999.dp),
+        color = Color.Transparent,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                painter = androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_share),
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = branchText,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
+    if (turnViewModel.gitMenuExpanded) {
+        BranchSelectorSheet(
+            branches = branches,
+            currentBranch = currentBranch,
+            selectedBaseBranch = selectedBaseBranch,
+            defaultBranch = defaultBranch,
+            isEnabled = state.isConnected,
+            onDismiss = { turnViewModel.gitMenuExpanded = false },
+            onRefresh = onRefreshGitBranches,
+            onSelectCurrentBranch = { branch ->
+                turnViewModel.gitMenuExpanded = false
+                onCheckoutGitBranch(branch)
+            },
+            onSelectBaseBranch = { branch ->
+                turnViewModel.gitMenuExpanded = false
+                onSelectGitBaseBranch(branch)
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BranchSelectorSheet(
+    branches: List<String>,
+    currentBranch: String,
+    selectedBaseBranch: String,
+    defaultBranch: String?,
+    isEnabled: Boolean,
+    onDismiss: () -> Unit,
+    onRefresh: () -> Unit,
+    onSelectCurrentBranch: (String) -> Unit,
+    onSelectBaseBranch: (String) -> Unit,
+) {
+    val prioritizedBranches = remember(branches, defaultBranch) {
+        val unique = branches.distinct()
+        buildList {
+            defaultBranch?.let { default ->
+                if (unique.contains(default)) {
+                    add(default)
+                }
+            }
+            unique.forEach { branch ->
+                if (branch != defaultBranch) {
+                    add(branch)
+                }
+            }
+        }
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color.Transparent,
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(30.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                tonalElevation = 8.dp,
+                shadowElevation = 10.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    BranchSelectorSection(
+                        title = "Current branch",
+                        branches = prioritizedBranches,
+                        selectedBranch = currentBranch,
+                        defaultBranch = defaultBranch,
+                        isEnabled = isEnabled,
+                        disableBranch = { branch -> branch == currentBranch },
+                        onSelect = onSelectCurrentBranch,
+                    )
+                    BranchSelectorSection(
+                        title = "PR target",
+                        branches = prioritizedBranches,
+                        selectedBranch = selectedBaseBranch,
+                        defaultBranch = defaultBranch,
+                        isEnabled = isEnabled,
+                        disableBranch = { branch -> branch == currentBranch },
+                        onSelect = onSelectBaseBranch,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = isEnabled, onClick = onRefresh)
+                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Sync,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text(
+                            text = "Reload branch list",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isEnabled) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                            },
+                        )
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun BranchSelectorSection(
+    title: String,
+    branches: List<String>,
+    selectedBranch: String,
+    defaultBranch: String?,
+    isEnabled: Boolean,
+    disableBranch: (String) -> Boolean,
+    onSelect: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.20f),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp)) {
+                branches.forEachIndexed { index, branch ->
+                    BranchSelectorRow(
+                        title = branchLabel(branch, defaultBranch),
+                        selected = branch == selectedBranch,
+                        enabled = isEnabled && !disableBranch(branch),
+                        showDivider = index < branches.lastIndex,
+                        onClick = { onSelect(branch) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BranchSelectorRow(
+    title: String,
+    selected: Boolean,
+    enabled: Boolean,
+    showDivider: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = enabled || selected, onClick = onClick)
+                .padding(horizontal = 12.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (selected) {
+                Icon(
+                    Icons.Outlined.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(18.dp),
+                )
+            } else {
+                Spacer(Modifier.size(18.dp))
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge.copy(fontFamily = monoFamily),
+                color = if (enabled || selected) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                },
+            )
+        }
+        if (showDivider) {
+            HorizontalDivider(
+                modifier = Modifier.padding(start = 42.dp, end = 12.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f),
+            )
+        }
+    }
+}
+
+private fun branchLabel(branch: String, defaultBranch: String?): String {
+    return if (branch == defaultBranch) "$branch (default)" else branch
 }

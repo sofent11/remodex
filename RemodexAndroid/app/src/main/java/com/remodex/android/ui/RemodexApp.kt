@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -37,6 +38,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -50,7 +52,6 @@ import com.remodex.android.ui.screens.PairingEntryScreen
 import com.remodex.android.ui.screens.SettingsScreen
 import com.remodex.android.ui.screens.SidebarScreen
 import com.remodex.android.ui.shared.AppBackdrop
-import com.remodex.android.ui.shared.StatusPill
 import com.remodex.android.ui.turn.DiffDetailDialog
 import com.remodex.android.ui.turn.TurnScreen
 import com.remodex.android.ui.turn.TurnTopBarActions
@@ -108,7 +109,7 @@ private fun RemodexAppShell(
     val shellContent = contentViewModel.shellContent(state)
     val selectedThread = state.selectedThread
     val isSelectedThreadRunning = selectedThread?.id?.let { threadId ->
-        state.runningThreadIds.contains(threadId) || state.activeTurnIdByThread.containsKey(threadId)
+        state.runningThreadIds.contains(threadId)
     } == true
     val shellHeader = remember(
         shellContent,
@@ -216,10 +217,15 @@ private fun RemodexAppShell(
                     },
                     navigationIcon = {
                         Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-                            modifier = Modifier.padding(start = 8.dp),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                            modifier = Modifier
+                                .padding(start = 10.dp)
+                                .clip(androidx.compose.foundation.shape.CircleShape),
                         ) {
-                            IconButton(onClick = { coroutineScope.launch { drawerState.open() } }) {
+                            IconButton(
+                                onClick = { coroutineScope.launch { drawerState.open() } },
+                                modifier = Modifier.padding(2.dp),
+                            ) {
                                 Icon(Icons.Outlined.Menu, contentDescription = "Open drawer")
                             }
                         }
@@ -245,8 +251,16 @@ private fun RemodexAppShell(
                                     }
                                 },
                             )
+                        } else {
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                                modifier = Modifier.padding(end = 10.dp),
+                            ) {
+                                IconButton(onClick = {}) {
+                                    Icon(Icons.Outlined.Tune, contentDescription = null)
+                                }
+                            }
                         }
-                        StatusPill(state = state)
                     },
                 )
             },

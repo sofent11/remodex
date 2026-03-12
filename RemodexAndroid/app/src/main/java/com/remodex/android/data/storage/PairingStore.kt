@@ -5,10 +5,14 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.remodex.android.data.model.AccessMode
 import com.remodex.android.data.model.AppFontStyle
+import com.remodex.android.data.model.ChatMessage
 import com.remodex.android.data.model.PairingRecord
 import com.remodex.android.data.model.PhoneIdentityState
+import com.remodex.android.data.model.ThreadSummary
 import com.remodex.android.data.model.TrustedMacRegistry
+import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 
 class PairingStore(context: Context) {
@@ -106,6 +110,47 @@ class PairingStore(context: Context) {
         prefs.edit().putString(KEY_SELECTED_REASONING, reasoningEffort).apply()
     }
 
+    fun loadCachedThreads(): List<ThreadSummary> {
+        val encoded = prefs.getString(KEY_CACHED_THREADS, null) ?: return emptyList()
+        return runCatching {
+            json.decodeFromString(ListSerializer(ThreadSummary.serializer()), encoded)
+        }.getOrDefault(emptyList())
+    }
+
+    fun saveCachedThreads(threads: List<ThreadSummary>) {
+        prefs.edit()
+            .putString(KEY_CACHED_THREADS, json.encodeToString(ListSerializer(ThreadSummary.serializer()), threads))
+            .apply()
+    }
+
+    fun loadCachedSelectedThreadId(): String? = prefs.getString(KEY_CACHED_SELECTED_THREAD_ID, null)
+
+    fun saveCachedSelectedThreadId(threadId: String?) {
+        prefs.edit().putString(KEY_CACHED_SELECTED_THREAD_ID, threadId).apply()
+    }
+
+    fun loadCachedMessagesByThread(): Map<String, List<ChatMessage>> {
+        val encoded = prefs.getString(KEY_CACHED_MESSAGES_BY_THREAD, null) ?: return emptyMap()
+        return runCatching {
+            json.decodeFromString(
+                MapSerializer(String.serializer(), ListSerializer(ChatMessage.serializer())),
+                encoded,
+            )
+        }.getOrDefault(emptyMap())
+    }
+
+    fun saveCachedMessagesByThread(messagesByThread: Map<String, List<ChatMessage>>) {
+        prefs.edit()
+            .putString(
+                KEY_CACHED_MESSAGES_BY_THREAD,
+                json.encodeToString(
+                    MapSerializer(String.serializer(), ListSerializer(ChatMessage.serializer())),
+                    messagesByThread,
+                ),
+            )
+            .apply()
+    }
+
     private companion object {
         const val KEY_ONBOARDING_SEEN = "onboarding_seen"
         const val KEY_FONT_STYLE = "font_style"
@@ -116,5 +161,8 @@ class PairingStore(context: Context) {
         const val KEY_TRUSTED_MACS = "trusted_macs"
         const val KEY_SELECTED_MODEL_ID = "selected_model_id"
         const val KEY_SELECTED_REASONING = "selected_reasoning_effort"
+        const val KEY_CACHED_THREADS = "cached_threads"
+        const val KEY_CACHED_SELECTED_THREAD_ID = "cached_selected_thread_id"
+        const val KEY_CACHED_MESSAGES_BY_THREAD = "cached_messages_by_thread"
     }
 }

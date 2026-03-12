@@ -201,13 +201,26 @@ internal fun TurnComposerView(
             state = state,
             turnViewModel = turnViewModel,
             onSelectAccessMode = onSelectAccessMode,
-            onGitAction = { action ->
+            onRefreshGitBranches = {
                 val currentCwdLocal = state.selectedThread?.cwd
                 if (currentCwdLocal != null) {
                     coroutineScope.launch {
-                        viewModel.performGitAction(currentCwdLocal, action)
-                        viewModel.gitStatus(currentCwdLocal)
+                        viewModel.gitBranchesWithStatus(currentCwdLocal)
                     }
+                }
+            },
+            onCheckoutGitBranch = { branch ->
+                val currentCwdLocal = state.selectedThread?.cwd
+                if (currentCwdLocal != null) {
+                    coroutineScope.launch {
+                        viewModel.checkoutGitBranch(currentCwdLocal, branch)
+                        viewModel.gitBranchesWithStatus(currentCwdLocal)
+                    }
+                }
+            },
+            onSelectGitBaseBranch = { branch ->
+                state.selectedThreadId?.let { threadId ->
+                    viewModel.selectGitBaseBranch(threadId, branch)
                 }
             },
         )

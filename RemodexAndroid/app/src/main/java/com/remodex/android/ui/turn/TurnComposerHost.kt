@@ -96,6 +96,10 @@ internal fun TurnComposerHost(
 
     LaunchedEffect(state.selectedThread?.cwd, state.isConnected) {
         turnViewModel.refreshGitStatus(viewModel, state)
+        val cwd = state.selectedThread?.cwd
+        if (state.isConnected && cwd != null) {
+            viewModel.gitBranchesWithStatus(cwd)
+        }
     }
 
     LaunchedEffect(input, state.selectedThreadId) {

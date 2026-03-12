@@ -127,11 +127,13 @@ enum class AccessMode(
     }
 }
 
+@Serializable
 enum class ThreadSyncState {
     LIVE,
     ARCHIVED_LOCAL,
 }
 
+@Serializable
 data class ThreadSummary(
     val id: String,
     val title: String? = null,
@@ -182,12 +184,14 @@ data class ThreadSummary(
     }
 }
 
+@Serializable
 enum class MessageRole {
     USER,
     ASSISTANT,
     SYSTEM,
 }
 
+@Serializable
 enum class MessageKind {
     CHAT,
     THINKING,
@@ -197,6 +201,7 @@ enum class MessageKind {
     USER_INPUT_PROMPT,
 }
 
+@Serializable
 enum class CommandPhase(val statusLabel: String) {
     RUNNING("Running"),
     COMPLETED("Completed"),
@@ -220,6 +225,7 @@ enum class CommandPhase(val statusLabel: String) {
     }
 }
 
+@Serializable
 data class CommandState(
     val shortCommand: String,
     val fullCommand: String,
@@ -230,6 +236,7 @@ data class CommandState(
     val outputTail: String = "",
 )
 
+@Serializable
 enum class PlanStepStatus {
     PENDING,
     IN_PROGRESS,
@@ -247,17 +254,20 @@ enum class PlanStepStatus {
     }
 }
 
+@Serializable
 data class PlanStep(
     val id: String = UUID.randomUUID().toString(),
     val step: String,
     val status: PlanStepStatus,
 )
 
+@Serializable
 data class PlanState(
     val explanation: String? = null,
     val steps: List<PlanStep> = emptyList(),
 )
 
+@Serializable
 data class FileChangeEntry(
     val path: String,
     val kind: String,
@@ -273,12 +283,14 @@ data class CodexImageAttachment(
     val sourceUrl: String? = null,
 )
 
+@Serializable
 data class StructuredUserInputOption(
     val id: String = UUID.randomUUID().toString(),
     val label: String,
     val description: String,
 )
 
+@Serializable
 data class StructuredUserInputQuestion(
     val id: String,
     val header: String,
@@ -288,11 +300,13 @@ data class StructuredUserInputQuestion(
     val options: List<StructuredUserInputOption>,
 )
 
+@Serializable
 data class StructuredUserInputRequest(
     val requestId: JsonElement,
     val questions: List<StructuredUserInputQuestion>,
 )
 
+@Serializable
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val threadId: String,
@@ -413,6 +427,8 @@ data class AppState(
     val importText: String = "",
     val pendingTransportSelectionMacDeviceId: String? = null,
     val gitRepoSyncByThread: Map<String, GitRepoSyncResult> = emptyMap(),
+    val gitBranchTargetsByThread: Map<String, GitBranchTargets> = emptyMap(),
+    val selectedGitBaseBranchByThread: Map<String, String> = emptyMap(),
     val contextWindowUsageByThread: Map<String, ContextWindowUsage> = emptyMap(),
     val queuedTurnDraftsByThread: Map<String, List<QueuedTurnDraft>> = emptyMap(),
     val queuePauseMessageByThread: Map<String, String> = emptyMap(),
@@ -428,6 +444,12 @@ data class AppState(
 
     val gitRepoSyncResult: GitRepoSyncResult?
         get() = selectedThreadId?.let(gitRepoSyncByThread::get)
+
+    val gitBranchTargets: GitBranchTargets?
+        get() = selectedThreadId?.let(gitBranchTargetsByThread::get)
+
+    val selectedGitBaseBranch: String?
+        get() = selectedThreadId?.let(selectedGitBaseBranchByThread::get)
 
     val contextWindowUsage: ContextWindowUsage?
         get() = selectedThreadId?.let(contextWindowUsageByThread::get)
@@ -520,6 +542,13 @@ data class GitRepoSyncResult(
     val state: String = "up_to_date",
     val canPush: Boolean = false,
     val repoDiffTotals: GitDiffTotals? = null,
+)
+
+@Serializable
+data class GitBranchTargets(
+    val branches: List<String> = emptyList(),
+    val currentBranch: String = "",
+    val defaultBranch: String? = null,
 )
 
 enum class TurnGitActionKind(val title: String) {

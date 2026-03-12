@@ -14,6 +14,7 @@ import com.remodex.android.data.model.CodexImageAttachment
 import com.remodex.android.data.model.CodexTurnSkillMention
 import com.remodex.android.data.model.FileChangeEntry
 import com.remodex.android.data.model.FuzzyFileMatch
+import com.remodex.android.data.model.GitBranchTargets
 import com.remodex.android.data.model.MessageKind
 import com.remodex.android.data.model.MessageRole
 import com.remodex.android.data.model.ModelOption
@@ -32,6 +33,7 @@ import com.remodex.android.data.model.StructuredUserInputOption
 import com.remodex.android.data.model.StructuredUserInputQuestion
 import com.remodex.android.data.model.StructuredUserInputRequest
 import com.remodex.android.data.model.ThreadSummary
+import com.remodex.android.data.model.ThreadSyncState
 import com.remodex.android.data.model.TrustedMacRecord
 import com.remodex.android.data.model.TrustedMacRegistry
 import com.remodex.android.data.model.array
@@ -53,6 +55,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -111,6 +114,9 @@ class RemodexRepository(context: Context) {
             activePairingMacDeviceId = store.loadActivePairingMacDeviceId(),
             phoneIdentityState = loadOrCreatePhoneIdentityState(),
             trustedMacRegistry = store.loadTrustedMacRegistry(),
+            threads = store.loadCachedThreads(),
+            selectedThreadId = store.loadCachedSelectedThreadId(),
+            messagesByThread = store.loadCachedMessagesByThread(),
             selectedModelId = store.loadSelectedModelId(),
             selectedReasoningEffort = store.loadSelectedReasoningEffort(),
         ),
@@ -123,6 +129,9 @@ class RemodexRepository(context: Context) {
         _state.value = currentState.copy(
             activePairingMacDeviceId = activePairing?.macDeviceId
                 ?: currentState.pairings.maxByOrNull(PairingRecord::lastPairedAt)?.macDeviceId,
+            selectedThreadId = currentState.selectedThreadId
+                ?.takeIf { selectedId -> currentState.threads.any { it.id == selectedId } }
+                ?: currentState.threads.firstOrNull()?.id,
             secureConnectionState = resolveSecureConnectionState(
                 activePairingMacDeviceId = activePairing?.macDeviceId ?: currentState.activePairingMacDeviceId,
                 trustedRegistry = currentState.trustedMacRegistry,
@@ -300,7 +309,12 @@ class RemodexRepository(context: Context) {
                             )
                         }
                         state.value.selectedThreadId?.let { threadId ->
-                            loadThreadHistory(threadId)
+                            runCatching {
+                                loadThreadHistory(threadId)
+                            }.onFailure { failure ->
+                                Log.w(TAG, "initial thread/read failed after connect epoch=$epoch threadId=$threadId", failure)
+                                scheduleThreadHistoryRetry(threadId, "initial-connect")
+                            }
                         }
                         return@launch
                     } catch (failure: Throwable) {
@@ -797,7 +811,91 @@ class RemodexRepository(context: Context) {
     suspend fun gitStatus(cwd: String): com.remodex.android.data.model.GitRepoSyncResult? {
         val params = buildJsonObject("cwd" to JsonPrimitive(cwd))
         val response = activeClient().sendRequest("git/status", params)?.jsonObjectOrNull() ?: return null
+        val result = parseGitRepoSyncResult(response)
+        val threadId = resolveThreadIdForCwd(cwd)
+        updateGitRepoSync(threadId, result)
+        return result
+    }
 
+    suspend fun gitBranchesWithStatus(cwd: String): GitBranchTargets? {
+        val params = buildJsonObject("cwd" to JsonPrimitive(cwd))
+        val response = activeClient().sendRequest("git/branchesWithStatus", params)?.jsonObjectOrNull() ?: return null
+        val branches = response["branches"]?.jsonArrayOrNull()
+            ?.mapNotNull { element -> element.stringOrNull()?.trim()?.takeIf(String::isNotEmpty) }
+            .orEmpty()
+            .distinct()
+        val currentBranch = response.string("current")?.trim().orEmpty()
+        val defaultBranch = response.string("default")?.trim()?.takeIf(String::isNotEmpty)
+        val targets = GitBranchTargets(
+            branches = branches,
+            currentBranch = currentBranch,
+            defaultBranch = defaultBranch,
+        )
+        val threadId = resolveThreadIdForCwd(cwd)
+        response["status"]?.jsonObjectOrNull()?.let { status ->
+            updateGitRepoSync(threadId, parseGitRepoSyncResult(status))
+        }
+        if (threadId != null) {
+            updateState {
+                val normalizedBase = selectedGitBaseBranchByThread[threadId]
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?: defaultBranch
+                    ?: currentBranch.takeIf(String::isNotEmpty)
+                copy(
+                    gitBranchTargetsByThread = gitBranchTargetsByThread + (threadId to targets),
+                    selectedGitBaseBranchByThread = if (normalizedBase == null) {
+                        selectedGitBaseBranchByThread
+                    } else {
+                        selectedGitBaseBranchByThread + (threadId to normalizedBase)
+                    },
+                )
+            }
+        }
+        return targets
+    }
+
+    suspend fun checkoutGitBranch(cwd: String, branch: String): com.remodex.android.data.model.GitRepoSyncResult? {
+        val normalizedBranch = branch.trim()
+        if (normalizedBranch.isEmpty()) {
+            return null
+        }
+        val params = buildJsonObject(
+            "cwd" to JsonPrimitive(cwd),
+            "branch" to JsonPrimitive(normalizedBranch),
+        )
+        val response = activeClient().sendRequest("git/checkout", params)?.jsonObjectOrNull() ?: return null
+        val threadId = resolveThreadIdForCwd(cwd)
+        val status = response["status"]?.jsonObjectOrNull()?.let(::parseGitRepoSyncResult)
+        if (status != null) {
+            updateGitRepoSync(threadId, status)
+        }
+        if (threadId != null) {
+            updateState {
+                val existingTargets = gitBranchTargetsByThread[threadId]
+                copy(
+                    gitBranchTargetsByThread = if (existingTargets == null) {
+                        gitBranchTargetsByThread
+                    } else {
+                        gitBranchTargetsByThread + (threadId to existingTargets.copy(currentBranch = normalizedBranch))
+                    },
+                )
+            }
+        }
+        return status
+    }
+
+    fun selectGitBaseBranch(threadId: String, branch: String) {
+        val normalizedBranch = branch.trim()
+        if (normalizedBranch.isEmpty()) {
+            return
+        }
+        updateState {
+            copy(selectedGitBaseBranchByThread = selectedGitBaseBranchByThread + (threadId to normalizedBranch))
+        }
+    }
+
+    private fun parseGitRepoSyncResult(response: JsonObject): com.remodex.android.data.model.GitRepoSyncResult {
         val aheadCount = response.int("ahead") ?: response.int("unpushedCount") ?: 0
         val behindCount = response.int("behind") ?: response.int("unpulledCount") ?: 0
         val isDirty = response.bool("dirty") ?: response.bool("isDirty") ?: false
@@ -824,7 +922,7 @@ class RemodexRepository(context: Context) {
             totals.takeIf { it.hasChanges }
         }
 
-        val result = com.remodex.android.data.model.GitRepoSyncResult(
+        return com.remodex.android.data.model.GitRepoSyncResult(
             isDirty = isDirty,
             hasUnpushedCommits = hasUnpushedCommits,
             hasUnpulledCommits = hasUnpulledCommits,
@@ -842,9 +940,18 @@ class RemodexRepository(context: Context) {
             canPush = canPush,
             repoDiffTotals = repoDiffTotals,
         )
-        val threadId = state.value.selectedThreadId?.takeIf { selectedId ->
+    }
+
+    private fun resolveThreadIdForCwd(cwd: String): String? {
+        return state.value.selectedThreadId?.takeIf { selectedId ->
             state.value.threads.firstOrNull { it.id == selectedId }?.cwd == cwd
         } ?: state.value.threads.firstOrNull { it.cwd == cwd }?.id
+    }
+
+    private fun updateGitRepoSync(
+        threadId: String?,
+        result: com.remodex.android.data.model.GitRepoSyncResult,
+    ) {
         updateState {
             copy(
                 gitRepoSyncByThread = if (threadId == null) {
@@ -854,7 +961,6 @@ class RemodexRepository(context: Context) {
                 }
             )
         }
-        return result
     }
 
     suspend fun gitDiff(cwd: String): String? {
@@ -975,16 +1081,29 @@ class RemodexRepository(context: Context) {
             updateState { copy(connectionPhase = ConnectionPhase.LOADING_CHATS) }
         }
         val activeThreads = fetchThreads(archived = false)
-        val archivedThreads = runCatching { fetchThreads(archived = true) }.getOrDefault(emptyList())
-        val combined = (activeThreads + archivedThreads)
-            .distinctBy(ThreadSummary::id)
-            .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
-        updateState {
-            copy(
-                threads = combined,
-                selectedThreadId = selectedThreadId ?: combined.firstOrNull()?.id,
-                connectionPhase = if (updatePhase) ConnectionPhase.CONNECTED else connectionPhase,
-            )
+        applyThreadListSnapshot(
+            activeThreads = activeThreads,
+            archivedThreads = null,
+            updatePhase = updatePhase,
+            preserveExistingArchivedThreads = true,
+        )
+
+        scope.launch {
+            runCatching {
+                fetchThreads(archived = true)
+            }.onSuccess { archivedThreads ->
+                val latestActiveThreads = state.value.threads
+                    .filter { it.syncState != ThreadSyncState.ARCHIVED_LOCAL }
+                    .ifEmpty { activeThreads }
+                applyThreadListSnapshot(
+                    activeThreads = latestActiveThreads,
+                    archivedThreads = archivedThreads,
+                    updatePhase = false,
+                    preserveExistingArchivedThreads = false,
+                )
+            }.onFailure { failure ->
+                Log.w(TAG, "thread/list archived fetch failed (non-fatal)", failure)
+            }
         }
     }
 
@@ -1008,11 +1127,65 @@ class RemodexRepository(context: Context) {
             ?: result["items"]?.jsonArrayOrNull()
             ?: result["threads"]?.jsonArrayOrNull()
             ?: JsonArray(emptyList())
-        return items.mapNotNull { it.jsonObjectOrNull()?.let(ThreadSummary::fromJson) }
+        return items
+            .mapNotNull { it.jsonObjectOrNull()?.let(ThreadSummary::fromJson) }
+            .map { thread ->
+                if (archived) {
+                    thread.copy(syncState = ThreadSyncState.ARCHIVED_LOCAL)
+                } else {
+                    thread.copy(syncState = ThreadSyncState.LIVE)
+                }
+            }
+    }
+
+    private fun applyThreadListSnapshot(
+        activeThreads: List<ThreadSummary>,
+        archivedThreads: List<ThreadSummary>?,
+        updatePhase: Boolean,
+        preserveExistingArchivedThreads: Boolean,
+    ) {
+        updateState {
+            val existingArchivedThreads = if (preserveExistingArchivedThreads) {
+                threads.filter { it.syncState == ThreadSyncState.ARCHIVED_LOCAL }
+            } else {
+                emptyList()
+            }
+            val combined = mergeThreadLists(
+                activeThreads = activeThreads,
+                archivedThreads = archivedThreads ?: existingArchivedThreads,
+            )
+            val resolvedSelectedThreadId = selectedThreadId
+                ?.takeIf { selectedId -> combined.any { it.id == selectedId } }
+                ?: combined.firstOrNull()?.id
+            copy(
+                threads = combined,
+                selectedThreadId = resolvedSelectedThreadId,
+                connectionPhase = if (updatePhase) ConnectionPhase.CONNECTED else connectionPhase,
+            )
+        }
+    }
+
+    private fun mergeThreadLists(
+        activeThreads: List<ThreadSummary>,
+        archivedThreads: List<ThreadSummary>,
+    ): List<ThreadSummary> {
+        return (activeThreads + archivedThreads)
+            .distinctBy(ThreadSummary::id)
+            .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
     }
 
     private suspend fun loadThreadHistory(threadId: String) {
-        val result = activeClient().sendRequest(
+        val resumedThreadObject = runCatching {
+            val resumeResult = activeClient().sendRequest(
+                method = "thread/resume",
+                params = buildJsonObject(
+                    "threadId" to JsonPrimitive(threadId),
+                    "model" to state.value.selectedModelId?.let(::JsonPrimitive),
+                ),
+            )?.jsonObjectOrNull()
+            resumeResult?.threadPayload()
+        }.getOrNull()
+        val threadObject = resumedThreadObject ?: activeClient().sendRequest(
             method = "thread/read",
             params = JsonObject(
                 mapOf(
@@ -1020,8 +1193,12 @@ class RemodexRepository(context: Context) {
                     "includeTurns" to JsonPrimitive(true),
                 ),
             ),
-        )?.jsonObjectOrNull() ?: return
-        val threadObject = result["thread"]?.jsonObjectOrNull() ?: return
+        )?.jsonObjectOrNull()?.threadPayload() ?: return
+        ThreadSummary.fromJson(threadObject)?.let { thread ->
+            updateState {
+                copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
+            }
+        }
         val history = decodeMessagesFromThreadRead(threadId, threadObject)
         val activeTurnId = resolveActiveTurnId(threadObject)
         if (history.isNotEmpty()) {
@@ -1990,6 +2167,14 @@ class RemodexRepository(context: Context) {
                 }
             }
 
+            "thread/status/changed" -> {
+                handleThreadStatusChanged(params)
+            }
+
+            "thread/tokenUsage/updated" -> {
+                handleThreadTokenUsageUpdated(params)
+            }
+
             "turn/started" -> {
                 val threadId = params.resolveThreadId() ?: return
                 val turnId = params.resolveTurnId()
@@ -2236,6 +2421,9 @@ class RemodexRepository(context: Context) {
                 }
             }
 
+            "item/started",
+            "codex/event/item_started" -> Unit
+
             "error", "codex/event/error", "turn/failed" -> {
                 val resolvedParams = params
                 val threadId = params.resolveThreadId() ?: state.value.selectedThreadId ?: return
@@ -2256,7 +2444,288 @@ class RemodexRepository(context: Context) {
                 }
                 checkAndSendNextQueuedDraft(threadId)
             }
+
+            "codex/event" -> {
+                if (handleLegacyCodexEnvelopeEvent(params)) {
+                    return
+                }
+            }
+
+            else -> {
+                if (method.startsWith("codex/event/") && handleLegacyCodexNamedEvent(method, params)) {
+                    return
+                }
+                if (handleToolCallNotificationFallback(method, params)) {
+                    return
+                }
+                if (handleDiffNotificationFallback(method, params)) {
+                    return
+                }
+                if (handleFileChangeNotificationFallback(method, params)) {
+                    return
+                }
+                Log.d(TAG, "ignored notification method=$method params=${params?.toString()?.take(400)}")
+            }
         }
+    }
+
+    private fun handleThreadStatusChanged(params: JsonObject?) {
+        val threadId = params.resolveThreadId() ?: return
+        val payload = params ?: return
+        val normalizedStatus = normalizeMethodToken(
+            firstNonBlank(
+                payload.string("status"),
+                payload["status"]?.jsonObjectOrNull()?.string("type"),
+                payload["event"]?.jsonObjectOrNull()?.string("status"),
+                payload["event"]?.jsonObjectOrNull()?.get("status")?.jsonObjectOrNull()?.string("type"),
+            ).orEmpty(),
+        )
+        if (normalizedStatus in setOf("active", "running", "processing", "inprogress", "started", "pending")) {
+            updateState { copy(runningThreadIds = runningThreadIds + threadId) }
+            return
+        }
+        if (normalizedStatus in setOf("idle", "notloaded", "completed", "done", "finished", "stopped", "systemerror")) {
+            updateState {
+                copy(
+                    runningThreadIds = runningThreadIds - threadId,
+                    activeTurnIdByThread = if (activeTurnIdByThread[threadId] == null) {
+                        activeTurnIdByThread
+                    } else {
+                        activeTurnIdByThread - threadId
+                    },
+                )
+            }
+        }
+    }
+
+    private fun handleThreadTokenUsageUpdated(params: JsonObject?) {
+        val threadId = params.resolveThreadId() ?: return
+        val usageObject = params?.get("usage")?.jsonObjectOrNull()
+            ?: params?.get("event")?.jsonObjectOrNull()?.get("usage")?.jsonObjectOrNull()
+            ?: params
+            ?: return
+        val usedTokens = firstNonNull(
+            usageObject.int("tokensUsed"),
+            usageObject.int("tokens_used"),
+            usageObject.int("totalTokens"),
+            usageObject.int("total_tokens"),
+        ) ?: return
+        val totalTokens = firstNonNull(
+            usageObject.int("tokenLimit"),
+            usageObject.int("token_limit"),
+            usageObject.int("maxTokens"),
+            usageObject.int("max_tokens"),
+            usageObject.int("contextWindow"),
+            usageObject.int("context_window"),
+        ) ?: return
+        if (totalTokens <= 0) {
+            return
+        }
+        updateState {
+            copy(
+                contextWindowUsageByThread = contextWindowUsageByThread + (
+                    threadId to com.remodex.android.data.model.ContextWindowUsage(
+                        usedTokens = usedTokens,
+                        totalTokens = totalTokens,
+                        percentage = (usedTokens.toFloat() / totalTokens.toFloat()).coerceIn(0f, 1f),
+                    )
+                ),
+            )
+        }
+    }
+
+    private suspend fun handleLegacyCodexEnvelopeEvent(params: JsonObject?): Boolean {
+        val msgObject = params?.get("msg")?.jsonObjectOrNull() ?: return false
+        val eventType = msgObject.string("type")?.trim()?.lowercase() ?: return false
+        if (eventType == "turn_diff") {
+            val normalized = JsonObject(
+                buildMap {
+                    putAll(params)
+                    put("event", msgObject)
+                    msgObject.string("unified_diff")?.let { put("diff", JsonPrimitive(it)) }
+                    if (params.resolveTurnId() == null) {
+                        msgObject.string("turnId")?.let { put("turnId", JsonPrimitive(it)) }
+                    }
+                    if (params.resolveThreadId() == null) {
+                        firstNonBlank(
+                            msgObject.string("threadId"),
+                            msgObject.string("thread_id"),
+                            msgObject.string("conversationId"),
+                            msgObject.string("conversation_id"),
+                        )?.let { put("threadId", JsonPrimitive(it)) }
+                    }
+                },
+            )
+            handleNotification("turn/diff/updated", normalized)
+            return true
+        }
+        return handleLegacyCodexEventType(eventType, msgObject, params)
+    }
+
+    private suspend fun handleLegacyCodexNamedEvent(method: String, params: JsonObject?): Boolean {
+        if (!method.startsWith("codex/event/")) {
+            return false
+        }
+        val eventType = method.removePrefix("codex/event/").trim().lowercase()
+        if (eventType.isEmpty()) {
+            return false
+        }
+        val payload = params?.get("msg")?.jsonObjectOrNull()
+            ?: params?.get("event")?.jsonObjectOrNull()
+            ?: params
+            ?: return false
+        if (eventType == "turn_diff") {
+            val normalized = JsonObject(
+                buildMap {
+                    if (params != null) {
+                        putAll(params)
+                    }
+                    put("event", payload)
+                    firstNonBlank(payload.string("unified_diff"), payload.string("diff"))
+                        ?.let { put("diff", JsonPrimitive(it)) }
+                },
+            )
+            handleNotification("turn/diff/updated", normalized)
+            return true
+        }
+        return handleLegacyCodexEventType(eventType, payload, params)
+    }
+
+    private suspend fun handleLegacyCodexEventType(
+        eventType: String,
+        payload: JsonObject,
+        params: JsonObject?,
+    ): Boolean {
+        return when (eventType) {
+            "exec_command_begin", "exec_command_output_delta", "exec_command_end" -> {
+                handleLegacyCommandExecutionEvent(eventType, payload, params)
+            }
+
+            "background_event", "read", "search", "list_files" -> {
+                handleLegacyActivityEvent(eventType, payload, params)
+            }
+
+            else -> false
+        }
+    }
+
+    private suspend fun handleLegacyCommandExecutionEvent(
+        eventType: String,
+        payload: JsonObject,
+        params: JsonObject?,
+    ): Boolean {
+        val normalized = JsonObject(
+            buildMap {
+                if (params != null) {
+                    putAll(params)
+                }
+                put("event", payload)
+                firstNonBlank(
+                    payload.string("call_id"),
+                    payload.string("callId"),
+                    params?.resolveItemId(),
+                )?.let { put("itemId", JsonPrimitive(it)) }
+                firstNonBlank(
+                    payload.string("threadId"),
+                    payload.string("thread_id"),
+                    payload.string("conversationId"),
+                    params?.resolveThreadId(),
+                )?.let { put("threadId", JsonPrimitive(it)) }
+                firstNonBlank(
+                    payload.string("turnId"),
+                    payload.string("turn_id"),
+                    params?.resolveTurnId(),
+                )?.let { put("turnId", JsonPrimitive(it)) }
+                payload.flattenedString("text")?.let { put("text", JsonPrimitive(it)) }
+                payload.flattenedString("message")?.let { put("message", JsonPrimitive(it)) }
+                payload.string("status")?.let { put("status", JsonPrimitive(it)) }
+            },
+        )
+        val mappedMethod = when (eventType) {
+            "exec_command_output_delta" -> "item/commandExecution/outputDelta"
+            else -> "item/completed"
+        }
+        if (eventType == "exec_command_begin") {
+            upsertStreamingMessage(
+                threadId = normalized.resolveThreadId() ?: return false,
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.COMMAND_EXECUTION,
+                textDelta = decodeCommandExecutionText(normalized, decodeCommandState(normalized, completedFallback = false)),
+                turnId = normalized.resolveTurnId(),
+                itemId = normalized.resolveItemId(),
+                commandState = decodeCommandState(normalized, completedFallback = false),
+                replaceText = true,
+            )
+            return true
+        }
+        handleNotification(mappedMethod, normalized)
+        return true
+    }
+
+    private fun handleLegacyActivityEvent(
+        eventType: String,
+        payload: JsonObject,
+        params: JsonObject?,
+    ): Boolean {
+        val threadId = params.resolveThreadId() ?: return false
+        val line = firstNonBlank(
+            payload.flattenedString("message"),
+            payload.flattenedString("text"),
+            payload.flattenedString("path"),
+        ) ?: eventType.replace('_', ' ')
+        appendLocalMessage(
+            ChatMessage(
+                threadId = threadId,
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.COMMAND_EXECUTION,
+                text = line,
+                turnId = params.resolveTurnId(),
+                orderIndex = nextOrderIndex(),
+            ),
+        )
+        return true
+    }
+
+    private suspend fun handleFileChangeNotificationFallback(method: String, params: JsonObject?): Boolean {
+        val normalized = normalizeMethodToken(method)
+        if (!normalized.contains("filechange")) {
+            return false
+        }
+        val targetMethod = when {
+            normalized.contains("delta") || normalized.contains("partadded") -> "item/fileChange/outputDelta"
+            normalized.contains("completed") || normalized.contains("finished") || normalized.contains("done") -> "item/completed"
+            else -> "item/completed"
+        }
+        handleNotification(targetMethod, params)
+        return true
+    }
+
+    private suspend fun handleToolCallNotificationFallback(method: String, params: JsonObject?): Boolean {
+        val normalized = normalizeMethodToken(method)
+        if (!normalized.contains("toolcall")) {
+            return false
+        }
+        val targetMethod = when {
+            normalized.contains("delta") || normalized.contains("partadded") -> "item/toolCall/outputDelta"
+            normalized.contains("completed") || normalized.contains("finished") || normalized.contains("done") -> "item/toolCall/completed"
+            else -> "item/toolCall/completed"
+        }
+        handleNotification(targetMethod, params)
+        return true
+    }
+
+    private suspend fun handleDiffNotificationFallback(method: String, params: JsonObject?): Boolean {
+        val normalized = normalizeMethodToken(method)
+        val isDiffMethod = normalized.contains("turndiff") ||
+            normalized.contains("/diff/") ||
+            normalized.startsWith("diff/") ||
+            normalized.endsWith("/diff") ||
+            normalized.contains("itemdiff")
+        if (!isDiffMethod) {
+            return false
+        }
+        handleNotification("turn/diff/updated", params)
+        return true
     }
 
     private fun checkAndSendNextQueuedDraft(threadId: String) {
@@ -2447,11 +2916,60 @@ class RemodexRepository(context: Context) {
     }
 
     private fun updateState(update: AppState.() -> AppState) {
-        _state.value = _state.value.update()
+        val previous = _state.value
+        val updated = previous.update()
+        _state.value = updated
+        persistConversationCache(previous, updated)
     }
 
     private fun updateError(message: String) {
         updateState { copy(lastErrorMessage = message) }
+    }
+
+    private fun persistConversationCache(previous: AppState, updated: AppState) {
+        if (previous.threads == updated.threads &&
+            previous.selectedThreadId == updated.selectedThreadId &&
+            previous.messagesByThread == updated.messagesByThread
+        ) {
+            return
+        }
+
+        val cachedThreads = updated.threads
+            .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+            .take(40)
+        val cachedThreadIds = cachedThreads.map(ThreadSummary::id).toSet()
+        val cachedMessagesByThread = cachedThreads
+            .take(8)
+            .mapNotNull { thread ->
+                updated.messagesByThread[thread.id]
+                    ?.sortedBy(ChatMessage::orderIndex)
+                    ?.takeLast(200)
+                    ?.takeIf(List<ChatMessage>::isNotEmpty)
+                    ?.let { messages -> thread.id to messages }
+            }
+            .toMap()
+
+        store.saveCachedThreads(cachedThreads)
+        store.saveCachedSelectedThreadId(updated.selectedThreadId?.takeIf(cachedThreadIds::contains))
+        store.saveCachedMessagesByThread(cachedMessagesByThread)
+    }
+
+    private fun scheduleThreadHistoryRetry(threadId: String, reason: String) {
+        scope.launch {
+            delay(1_500)
+            val currentState = state.value
+            if (!currentState.isConnected) {
+                return@launch
+            }
+            if (currentState.messagesByThread[threadId].orEmpty().isNotEmpty()) {
+                return@launch
+            }
+            runCatching {
+                loadThreadHistory(threadId)
+            }.onFailure { failure ->
+                Log.w(TAG, "thread/read retry failed reason=$reason threadId=$threadId", failure)
+            }
+        }
     }
 
     private suspend fun activeClient(): SecureBridgeClient {
@@ -2492,6 +3010,11 @@ class RemodexRepository(context: Context) {
 private fun JsonElement?.jsonObjectOrNull(): JsonObject? = this as? JsonObject
 
 private fun JsonElement?.jsonArrayOrNull(): JsonArray? = this as? JsonArray
+
+private fun JsonObject.threadPayload(): JsonObject? {
+    return this["thread"]?.jsonObjectOrNull()
+        ?: this["result"]?.jsonObjectOrNull()?.get("thread")?.jsonObjectOrNull()
+}
 
 private fun JsonObject?.resolveThreadId(): String? {
     if (this == null) {
@@ -2579,6 +3102,14 @@ private fun flattenStringParts(value: JsonElement?): String {
 
 private fun firstNonBlank(vararg values: String?): String? {
     return values.firstOrNull { !it.isNullOrBlank() }?.trim()
+}
+
+private fun normalizeMethodToken(value: String): String {
+    return value
+        .trim()
+        .lowercase()
+        .replace("_", "")
+        .replace("-", "")
 }
 
 private fun AppState.threadHasActiveOrRunningTurn(threadId: String): Boolean {

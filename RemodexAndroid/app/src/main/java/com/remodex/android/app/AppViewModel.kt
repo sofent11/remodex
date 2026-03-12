@@ -83,6 +83,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun gitStatus(cwd: String) = repository.gitStatus(cwd)
 
+    suspend fun gitBranchesWithStatus(cwd: String) = repository.gitBranchesWithStatus(cwd)
+
+    suspend fun checkoutGitBranch(cwd: String, branch: String) = repository.checkoutGitBranch(cwd, branch)
+
+    fun selectGitBaseBranch(threadId: String, branch: String) = repository.selectGitBaseBranch(threadId, branch)
+
     suspend fun gitCommit(cwd: String, message: String) = repository.gitCommit(cwd, message)
 
     suspend fun gitDiff(cwd: String) = repository.gitDiff(cwd)
