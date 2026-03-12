@@ -84,7 +84,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             Text(
                 "Control Codex from your Android phone.",
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
@@ -115,7 +115,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             ) {
                 Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Scan QR Code", style = MaterialTheme.typography.titleMedium)
+                Text("Scan QR Code", style = MaterialTheme.typography.bodyLarge)
             }
 
             Spacer(Modifier.height(16.dp))

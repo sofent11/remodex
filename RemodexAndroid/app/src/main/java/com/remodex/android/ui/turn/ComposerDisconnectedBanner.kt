@@ -51,7 +51,7 @@ internal fun ComposerDisconnectedBanner(
                     modifier = Modifier.widthIn(min = 88.dp),
                 ) {
                     Text(
-                        text = if (state.connectionPhase == ConnectionPhase.CONNECTING) "Retrying" else "Reconnect",
+                        text = if (state.connectionPhase == ConnectionPhase.CONNECTING) "Reconnecting..." else "Reconnect",
                         maxLines = 1,
                         overflow = TextOverflow.Clip,
                     )

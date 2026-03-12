@@ -106,16 +106,9 @@ fun HomeEmptyScreen(
         )
 
         Spacer(Modifier.height(16.dp))
-        Text(
-            text = securityLabel,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(10.dp))
-        state.secureMacFingerprint?.let { fingerprint ->
+        if (securityLabel.isNotBlank()) {
             Text(
-                text = "Trusted Mac: $fingerprint",
+                text = securityLabel,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -140,7 +133,7 @@ fun HomeEmptyScreen(
         ) {
             Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
             Spacer(Modifier.width(8.dp))
-            Text("Scan New QR Code")
+            Text("Scan QR Code")
         }
         
         state.lastErrorMessage?.let { error ->

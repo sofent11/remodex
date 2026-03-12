@@ -19,7 +19,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Delete
@@ -68,6 +67,7 @@ fun SidebarThreadListView(
     var expandedProjectIds by rememberSaveable { mutableStateOf(emptySet<String>()) }
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
     var menuThreadId by rememberSaveable { mutableStateOf<String?>(null) }
+    val hasVisibleThreads = groups.any { it.threads.isNotEmpty() }
 
     LaunchedEffect(groups.map { it.id }) {
         val projectIds = groups
@@ -90,7 +90,7 @@ fun SidebarThreadListView(
         }
     }
 
-    if (groups.isEmpty()) {
+    if (!hasVisibleThreads) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -266,7 +266,7 @@ private fun SidebarArchivedGroupHeader(
             tint = MaterialTheme.colorScheme.onSurface,
         )
         Text(
-            text = "Archived chats",
+            text = "Archived",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.weight(1f),
@@ -327,7 +327,21 @@ private fun SidebarThreadRowView(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    if (isRunning) {
+                        Text(
+                            text = "RUN",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                            ),
+                            color = PlanAccent,
+                            modifier = Modifier
+                                .background(PlanAccent.copy(alpha = 0.1f), RoundedCornerShape(999.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
                     Text(
                         text = thread.displayTitle,
                         style = MaterialTheme.typography.bodyLarge,
@@ -346,6 +360,20 @@ private fun SidebarThreadRowView(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (thread.syncState == ThreadSyncState.ARCHIVED_LOCAL) {
+                        Text(
+                            text = "Archived",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f),
+                                    RoundedCornerShape(999.dp),
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
                     Text(
                         text = thread.projectDisplayName,
                         style = MaterialTheme.typography.labelSmall,
@@ -354,20 +382,6 @@ private fun SidebarThreadRowView(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
-                    if (isRunning) {
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "RUN",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 10.sp,
-                            ),
-                            color = PlanAccent,
-                            modifier = Modifier
-                                .background(PlanAccent.copy(alpha = 0.1f), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 4.dp, vertical = 2.dp),
-                        )
-                    }
                 }
 
                 thread.preview?.takeIf { it.isNotBlank() }?.let { preview ->

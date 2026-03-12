@@ -149,11 +149,11 @@ internal fun composerReasoningTitle(effort: String): String {
 
 internal fun composerConnectionMessage(state: AppState): String {
     return when (state.connectionPhase) {
-        ConnectionPhase.CONNECTING -> "Re-establishing the local bridge session."
+        ConnectionPhase.CONNECTING -> "Reconnecting to your Mac bridge..."
         ConnectionPhase.LOADING_CHATS -> "Connected securely. Loading conversation history."
-        ConnectionPhase.SYNCING -> "Syncing recent thread state from your Mac."
+        ConnectionPhase.SYNCING -> "Connected securely. Syncing recent thread state from your Mac."
         ConnectionPhase.CONNECTED -> "Connected to your paired Mac."
-        ConnectionPhase.OFFLINE -> "Reconnect to the paired bridge before sending."
+        ConnectionPhase.OFFLINE -> "History is available offline. Reconnect before sending new messages."
     }
 }
 

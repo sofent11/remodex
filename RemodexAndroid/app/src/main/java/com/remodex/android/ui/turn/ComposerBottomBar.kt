@@ -33,7 +33,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -165,19 +164,27 @@ internal fun ComposerPrimaryToolbar(
                 expanded = turnViewModel.modelMenuExpanded,
                 onDismissRequest = { turnViewModel.modelMenuExpanded = false },
             ) {
-                orderedModels.forEach { model ->
+                if (orderedModels.isEmpty()) {
                     DropdownMenuItem(
-                        text = { Text(composerModelTitle(model)) },
-                        leadingIcon = if (selectedModel?.id == model.id) {
-                            { Icon(Icons.Outlined.Check, contentDescription = null) }
-                        } else {
-                            null
-                        },
-                        onClick = {
-                            onSelectModel(model.id)
-                            turnViewModel.modelMenuExpanded = false
-                        },
+                        text = { Text("No models available") },
+                        enabled = false,
+                        onClick = {},
                     )
+                } else {
+                    orderedModels.forEach { model ->
+                        DropdownMenuItem(
+                            text = { Text(composerModelTitle(model)) },
+                            leadingIcon = if (selectedModel?.id == model.id) {
+                                { Icon(Icons.Outlined.Check, contentDescription = null) }
+                            } else {
+                                null
+                            },
+                            onClick = {
+                                onSelectModel(model.id)
+                                turnViewModel.modelMenuExpanded = false
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -192,19 +199,27 @@ internal fun ComposerPrimaryToolbar(
                 expanded = turnViewModel.reasoningMenuExpanded,
                 onDismissRequest = { turnViewModel.reasoningMenuExpanded = false },
             ) {
-                reasoningOptions.forEach { effort ->
+                if (reasoningOptions.isEmpty()) {
                     DropdownMenuItem(
-                        text = { Text(composerReasoningTitle(effort)) },
-                        leadingIcon = if (state.selectedReasoningEffort == effort) {
-                            { Icon(Icons.Outlined.Check, contentDescription = null) }
-                        } else {
-                            null
-                        },
-                        onClick = {
-                            onSelectReasoning(effort)
-                            turnViewModel.reasoningMenuExpanded = false
-                        },
+                        text = { Text("No reasoning options") },
+                        enabled = false,
+                        onClick = {},
                     )
+                } else {
+                    reasoningOptions.forEach { effort ->
+                        DropdownMenuItem(
+                            text = { Text(composerReasoningTitle(effort)) },
+                            leadingIcon = if (state.selectedReasoningEffort == effort) {
+                                { Icon(Icons.Outlined.Check, contentDescription = null) }
+                            } else {
+                                null
+                            },
+                            onClick = {
+                                onSelectReasoning(effort)
+                                turnViewModel.reasoningMenuExpanded = false
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -307,7 +322,6 @@ internal fun ComposerSecondaryToolbar(
     onCheckoutGitBranch: (String) -> Unit,
     onSelectGitBaseBranch: (String) -> Unit,
 ) {
-    val uriHandler = LocalUriHandler.current
     AnimatedVisibility(visible = !turnViewModel.isFocused) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -323,7 +337,6 @@ internal fun ComposerSecondaryToolbar(
             ) {
                 Box {
                     Surface(
-                        onClick = { turnViewModel.runtimeMenuExpanded = true },
                         shape = RoundedCornerShape(999.dp),
                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
                     ) {
@@ -343,25 +356,6 @@ internal fun ComposerSecondaryToolbar(
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
-                    }
-                    DropdownMenu(
-                        expanded = turnViewModel.runtimeMenuExpanded,
-                        onDismissRequest = { turnViewModel.runtimeMenuExpanded = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Local") },
-                            leadingIcon = { Icon(Icons.Outlined.Check, contentDescription = null) },
-                            onClick = {
-                                turnViewModel.runtimeMenuExpanded = false
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Cloud") },
-                            onClick = {
-                                turnViewModel.runtimeMenuExpanded = false
-                                uriHandler.openUri("https://chatgpt.com/codex")
-                            },
-                        )
                     }
                 }
 

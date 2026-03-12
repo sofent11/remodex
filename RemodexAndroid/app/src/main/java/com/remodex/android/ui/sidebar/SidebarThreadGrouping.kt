@@ -60,7 +60,7 @@ fun buildSidebarThreadGroups(
             add(
                 SidebarThreadGroup(
                     id = "archived",
-                    label = "Archived chats",
+                    label = "Archived",
                     kind = SidebarThreadGroupKind.ARCHIVED,
                     threads = archivedThreads,
                 ),

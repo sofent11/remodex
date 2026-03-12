@@ -44,7 +44,7 @@ internal fun TurnComposerHost(
     }
     val orderedModels = remember(state.availableModels) { orderedComposerModels(state.availableModels) }
     val selectedModelTitle = remember(selectedModel) {
-        selectedModel?.let(::composerModelTitle) ?: "Model"
+        selectedModel?.let(::composerModelTitle) ?: "Select model"
     }
     val selectedReasoningTitle = remember(selectedModel, state.selectedReasoningEffort) {
         selectedModel?.let {
@@ -53,7 +53,7 @@ internal fun TurnComposerHost(
                 ?.let(::composerReasoningTitle)
                 ?: it.defaultReasoningEffort?.let(::composerReasoningTitle)
                 ?: it.supportedReasoningEfforts.firstOrNull()?.let(::composerReasoningTitle)
-        } ?: "Reasoning"
+        } ?: "Select reasoning"
     }
     fun enqueueImageUris(uris: List<android.net.Uri>) {
         if (uris.isEmpty()) {

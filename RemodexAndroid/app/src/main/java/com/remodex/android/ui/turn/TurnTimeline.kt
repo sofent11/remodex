@@ -12,10 +12,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import com.remodex.android.data.model.ChatMessage
+import com.remodex.android.data.model.CommandPhase
 import com.remodex.android.data.model.MessageRole
 import kotlinx.coroutines.launch
 
@@ -138,23 +139,31 @@ internal fun TurnTimeline(
             }
         }
 
-        if (messages.isNotEmpty() && !isNearBottom) {
-            FilledTonalButton(
-                onClick = {
-                    turnViewModel.shouldAnchorToAssistantResponse = false
-                    autoScrollMode = TurnAutoScrollMode.FOLLOW_BOTTOM
-                    coroutineScope.launch {
-                        listState.animateScrollToItem(renderItems.lastIndex)
-                    }
-                },
+        if (renderItems.isNotEmpty() && !isNearBottom) {
+            Surface(
                 shape = RoundedCornerShape(999.dp),
+                tonalElevation = 6.dp,
+                shadowElevation = 6.dp,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 78.dp),
             ) {
-                Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = null)
-                Text("Scroll to latest")
+                IconButton(
+                    onClick = {
+                        turnViewModel.shouldAnchorToAssistantResponse = false
+                        autoScrollMode = TurnAutoScrollMode.FOLLOW_BOTTOM
+                        coroutineScope.launch {
+                            listState.animateScrollToItem(renderItems.lastIndex)
+                        }
+                    },
+                ) {
+                    Icon(
+                        Icons.Outlined.KeyboardArrowDown,
+                        contentDescription = "Scroll to latest message",
+                    )
+                }
             }
         }
     }
@@ -169,6 +178,14 @@ internal fun buildCopyBlockTextByMessageId(
         return emptyMap()
     }
     val result = mutableMapOf<String, String>()
+    val stoppedTurnIds = messages
+        .filter { it.commandState?.phase == CommandPhase.STOPPED }
+        .mapNotNull { it.turnId?.trim()?.takeIf(String::isNotEmpty) }
+        .toSet()
+    val latestTerminalPhase = messages
+        .lastOrNull { it.commandState != null }
+        ?.commandState
+        ?.phase
     val latestBlockEnd = messages.indexOfLast { it.role != MessageRole.USER }
     var index = messages.lastIndex
     while (index >= 0) {
@@ -191,6 +208,8 @@ internal fun buildCopyBlockTextByMessageId(
             .firstNotNullOfOrNull { message -> message.turnId?.trim()?.takeIf(String::isNotEmpty) }
         val shouldShowCopyButton = when {
             blockText.isBlank() -> false
+            blockTurnId != null && stoppedTurnIds.contains(blockTurnId) -> false
+            blockEnd == latestBlockEnd && latestTerminalPhase == CommandPhase.STOPPED -> false
             !isThreadRunning -> true
             blockTurnId != null && activeTurnId != null -> blockTurnId != activeTurnId
             else -> blockEnd != latestBlockEnd
