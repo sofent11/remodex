@@ -63,8 +63,9 @@ internal fun TurnComposerView(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 12.dp)
+            .padding(top = 6.dp, bottom = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         AnimatedVisibility(visible = !state.isConnected) {
             ComposerDisconnectedBanner(

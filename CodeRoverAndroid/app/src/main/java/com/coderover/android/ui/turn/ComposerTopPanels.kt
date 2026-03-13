@@ -31,7 +31,8 @@ internal fun ComposerTopPanels(
     onRemoveDraft: (String) -> Unit,
 ) {
     AnimatedVisibility(
-        visible = turnViewModel.autocompleteFiles.isNotEmpty() ||
+        visible = turnViewModel.composerNoticeMessage != null ||
+            turnViewModel.autocompleteFiles.isNotEmpty() ||
             turnViewModel.autocompleteSkills.isNotEmpty() ||
             queuedDrafts.isNotEmpty() ||
             (turnViewModel.isPlanModeArmed && showsPlanMode),
