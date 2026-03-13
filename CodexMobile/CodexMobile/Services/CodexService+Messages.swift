@@ -242,6 +242,8 @@ extension CodexService {
             throw CodexServiceError.invalidResponse("thread/read response missing thread payload")
         }
 
+        applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
+
         // A turn may have started while the thread/read request was in flight.
         // Merging stale history would overwrite live streaming text and clear
         // isStreaming flags, causing messages to flicker (disappear then reappear).
@@ -271,6 +273,36 @@ extension CodexService {
 
         hydratedThreadIDs.insert(threadId)
         updateCurrentOutput(for: threadId)
+    }
+
+    func applyTerminalStatesFromThreadRead(threadId: String, threadObject: [String: JSONValue]) {
+        let turnObjects = threadObject["turns"]?.arrayValue?.compactMap { $0.objectValue } ?? []
+        guard !turnObjects.isEmpty else { return }
+
+        var latestTerminal: (turnId: String?, state: CodexTurnTerminalState)?
+
+        for turnObject in turnObjects {
+            let turnId = normalizedInterruptIdentifier(
+                turnObject["id"]?.stringValue
+                    ?? turnObject["turnId"]?.stringValue
+                    ?? turnObject["turn_id"]?.stringValue
+            )
+            let normalizedStatus = normalizedInterruptTurnStatus(from: turnObject)
+            guard let normalizedStatus,
+                  let terminalState = threadTerminalState(from: normalizedStatus) else {
+                continue
+            }
+
+            recordTurnTerminalState(threadId: threadId, turnId: turnId, state: terminalState)
+            latestTerminal = (turnId, terminalState)
+        }
+
+        if let latestTerminal {
+            latestTurnTerminalStateByThread[threadId] = latestTerminal.state
+            if let turnId = latestTerminal.turnId {
+                terminalStateByTurnID[turnId] = latestTerminal.state
+            }
+        }
     }
 
     // Extracts context window usage from thread/read response if the runtime includes it.

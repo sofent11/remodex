@@ -97,7 +97,16 @@ final class CodexService {
     var activeThreadId: String? {
         didSet {
             guard oldValue != activeThreadId else { return }
-            syncRuntimeSelectionContext()
+            let previousProviderID = runtimeProviderID(
+                for: threads.first(where: { $0.id == oldValue })?.provider
+            )
+            let nextProviderID = runtimeProviderID(
+                for: threads.first(where: { $0.id == activeThreadId })?.provider
+            )
+            let shouldRefreshModels = isConnected
+                && previousProviderID != nextProviderID
+                && loadedModelsProviderID != nextProviderID
+            syncRuntimeSelectionContext(for: nextProviderID, refreshModels: shouldRefreshModels)
         }
     }
     var activeTurnId: String?
@@ -152,6 +161,8 @@ final class CodexService {
         }
     }
     var isLoadingModels = false
+    var loadingModelsProviderID: String?
+    var loadedModelsProviderID: String?
     var modelsErrorMessage: String?
     var notificationAuthorizationStatus: UNAuthorizationStatus = .notDetermined
     var pendingNotificationOpenThreadID: String?

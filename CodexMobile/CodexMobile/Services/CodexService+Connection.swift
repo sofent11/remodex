@@ -89,6 +89,8 @@ extension CodexService {
         isInitialized = false
         isLoadingThreads = false
         isLoadingModels = false
+        loadingModelsProviderID = nil
+        loadedModelsProviderID = nil
         isBootstrappingConnectionSync = false
         pendingApproval = nil
         finalizeAllStreamingState()

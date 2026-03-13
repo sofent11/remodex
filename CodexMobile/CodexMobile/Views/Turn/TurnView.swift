@@ -513,7 +513,6 @@ struct TurnView: View {
 
     private func prepareThreadIfReady(gitWorkingDirectory: String?) async {
         codex.activeThreadId = thread.id
-        codex.syncRuntimeSelectionContext()
         await codex.prepareThreadForDisplay(threadId: thread.id)
         viewModel.flushQueueIfPossible(codex: codex, threadID: thread.id)
         guard gitWorkingDirectory != nil else { return }

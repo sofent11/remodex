@@ -53,10 +53,17 @@ extension CodexService {
     }
 
     func listModels(provider: String? = nil) async throws {
-        isLoadingModels = true
-        defer { isLoadingModels = false }
-
         let resolvedProvider = runtimeProviderID(for: provider)
+        if isLoadingModels, loadingModelsProviderID == resolvedProvider {
+            return
+        }
+
+        isLoadingModels = true
+        loadingModelsProviderID = resolvedProvider
+        defer {
+            isLoadingModels = false
+            loadingModelsProviderID = nil
+        }
         do {
             let response = try await sendRequest(
                 method: "model/list",
@@ -80,6 +87,7 @@ extension CodexService {
 
             let decodedModels = items.compactMap { decodeModel(CodexModelOption.self, from: $0) }
             availableModels = decodedModels
+            loadedModelsProviderID = resolvedProvider
             modelsErrorMessage = nil
             normalizeRuntimeSelectionsAfterModelsUpdate(provider: resolvedProvider)
 
@@ -226,7 +234,7 @@ extension CodexService {
             selectedAccessMode = .onRequest
         }
 
-        if refreshModels {
+        if refreshModels, loadedModelsProviderID != resolvedProviderID {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 try? await self.listModels(provider: resolvedProviderID)

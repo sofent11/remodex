@@ -570,6 +570,7 @@ extension CodexService {
             resumedThread = decodedThread
 
             if let threadObject = threadValue.objectValue {
+                applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
                 let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
                 if !historyMessages.isEmpty {
                     let existingMessages = messagesByThread[threadId] ?? []
