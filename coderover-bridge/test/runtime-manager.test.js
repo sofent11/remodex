@@ -530,6 +530,68 @@ test("legacy Codex event notifications invalidate stale history windows so after
   }
 });
 
+test("Codex delta notifications without threadId still advance cache windows via turn context", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const threadRef = {
+      current: buildCodexThread({
+        threadId: "codex-turn-context-thread",
+        messageCount: 3,
+        turnId: "turn-context",
+      }),
+    };
+    const transportFixture = createDefaultCodexTransportFixture(fixture.manager, { threadRef });
+    fixture.manager.attachCodexTransport(transportFixture.transport);
+
+    const tailMessages = await request(fixture, "turn-context-tail", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 3,
+      },
+    });
+    const tailResponse = responseById(tailMessages, "turn-context-tail");
+    assert.ok(tailResponse);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+
+    const beforeCount = fixture.messages.length;
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/agentMessage/delta",
+      params: {
+        turnId: "turn-context",
+        itemId: "item-4",
+        delta: "message-4",
+      },
+    }));
+
+    const forwarded = fixture.messages[beforeCount];
+    assert.ok(forwarded);
+    assert.equal(forwarded.method, "item/agentMessage/delta");
+
+    const afterMessages = await request(fixture, "turn-context-after", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "after",
+        limit: 3,
+        cursor: tailResponse.result.historyWindow.newerCursor,
+      },
+    });
+    const afterResponse = responseById(afterMessages, "turn-context-after");
+    assert.ok(afterResponse);
+    assert.equal(afterResponse.result.historyWindow.servedFromCache, true);
+    assert.deepEqual(
+      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      ["item-4"]
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("thread/read history before window falls back to upstream when the cache boundary has a gap", async () => {
   const thread = buildCodexThread();
   const codexFixture = createCodexAdapterFixture({ threads: [thread] });

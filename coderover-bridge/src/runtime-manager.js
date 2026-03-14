@@ -782,6 +782,50 @@ function createRuntimeManager({
     return entry;
   }
 
+  function findCodexCachedThreadIdByTurnId(turnId) {
+    const normalizedTurnId = normalizeOptionalString(turnId);
+    if (!normalizedTurnId) {
+      return null;
+    }
+
+    for (const [threadId, entry] of codexHistoryCache.entries()) {
+      if (!Array.isArray(entry?.records)) {
+        continue;
+      }
+      const match = entry.records.some((record) => {
+        const recordTurnId = normalizeOptionalString(record?.turnId)
+          || normalizeOptionalString(record?.turnMeta?.id);
+        return recordTurnId === normalizedTurnId;
+      });
+      if (match) {
+        return threadId;
+      }
+    }
+
+    return null;
+  }
+
+  function findCodexCachedThreadIdByItemId(itemId) {
+    const normalizedItemId = normalizeOptionalString(itemId);
+    if (!normalizedItemId) {
+      return null;
+    }
+
+    for (const [threadId, entry] of codexHistoryCache.entries()) {
+      if (!Array.isArray(entry?.records)) {
+        continue;
+      }
+      const match = entry.records.some((record) =>
+        normalizeOptionalString(record?.itemObject?.id) === normalizedItemId
+      );
+      if (match) {
+        return threadId;
+      }
+    }
+
+    return null;
+  }
+
   function readCodexHistorySnapshot(threadId) {
     const normalizedThreadId = normalizeOptionalString(threadId);
     if (!normalizedThreadId) {
@@ -870,6 +914,7 @@ function createRuntimeManager({
     };
     entry.records.push({
       turnId: normalizedTurnId,
+      createdAt: nowIso,
       turnMeta: {
         id: normalizedTurnId,
         createdAt: nowIso,
@@ -1250,6 +1295,23 @@ function createRuntimeManager({
   }
 
   function extractCodexNotificationThreadId(params) {
+    const explicitThreadId = extractExplicitCodexNotificationThreadId(params);
+    if (explicitThreadId) {
+      return explicitThreadId;
+    }
+
+    const turnId = extractCodexNotificationTurnId(params);
+    if (turnId) {
+      const threadIdFromTurn = findCodexCachedThreadIdByTurnId(turnId) || findThreadIdByTurnId(turnId);
+      if (threadIdFromTurn) {
+        return threadIdFromTurn;
+      }
+    }
+
+    return findCodexCachedThreadIdByItemId(extractCodexNotificationItemId(params));
+  }
+
+  function extractExplicitCodexNotificationThreadId(params) {
     const payload = asObject(params);
     const envelopeEvent = extractCodexEnvelopeEvent(payload);
     const nestedEvent = asObject(payload.event);
@@ -1537,6 +1599,7 @@ function createRuntimeManager({
     });
     const record = {
       turnId: normalizedTurnId,
+      createdAt: nowIso,
       turnMeta,
       itemObject: {
         id: normalizedItemId,
