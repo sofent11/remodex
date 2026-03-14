@@ -495,6 +495,12 @@ data class TurnSkillMention(
     val path: String? = null,
 )
 
+enum class ThreadRunBadgeState {
+    RUNNING,
+    READY,
+    FAILED
+}
+
 data class AppState(
     val onboardingSeen: Boolean = false,
     val fontStyle: AppFontStyle = AppFontStyle.SYSTEM,
@@ -513,6 +519,8 @@ data class AppState(
     val messagesByThread: Map<String, List<ChatMessage>> = emptyMap(),
     val activeTurnIdByThread: Map<String, String> = emptyMap(),
     val runningThreadIds: Set<String> = emptySet(),
+    val readyThreadIds: Set<String> = emptySet(),
+    val failedThreadIds: Set<String> = emptySet(),
     val availableModels: List<ModelOption> = emptyList(),
     val selectedModelId: String? = null,
     val selectedReasoningEffort: String? = null,

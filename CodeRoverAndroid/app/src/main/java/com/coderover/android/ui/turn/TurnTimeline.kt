@@ -98,18 +98,16 @@ internal fun TurnTimeline(
         if (!turnViewModel.shouldAnchorToAssistantResponse || renderItems.isEmpty()) {
             return@LaunchedEffect
         }
-        val anchorIndex = renderItems.indexOfLast { item ->
-            when (item) {
-                is TimelineRenderItem.Message -> item.message.role != MessageRole.USER
-                is TimelineRenderItem.TurnSection -> item.messages.any { message ->
-                    message.role != MessageRole.USER
-                }
+        val anchorId = assistantResponseAnchorMessageId(messages, activeTurnId)
+        if (anchorId != null) {
+            val anchorIndex = renderItems.indexOfLast { item ->
+                (item as? TimelineRenderItem.Message)?.message?.id == anchorId
             }
-        }
-        if (anchorIndex >= 0) {
-            autoScrollMode = TurnAutoScrollMode.ANCHOR_ASSISTANT_RESPONSE
-            listState.animateScrollToItem(anchorIndex)
-            autoScrollMode = TurnAutoScrollMode.MANUAL
+            if (anchorIndex >= 0) {
+                autoScrollMode = TurnAutoScrollMode.ANCHOR_ASSISTANT_RESPONSE
+                listState.animateScrollToItem(anchorIndex)
+                autoScrollMode = TurnAutoScrollMode.MANUAL
+            }
         }
         turnViewModel.shouldAnchorToAssistantResponse = false
     }
@@ -229,13 +227,14 @@ internal fun buildCopyBlockTextByMessageId(
         val blockTurnId = blockMessages
             .asReversed()
             .firstNotNullOfOrNull { message -> message.turnId?.trim()?.takeIf(String::isNotEmpty) }
+        val isLatestBlock = blockEnd == latestBlockEnd
         val shouldShowCopyButton = when {
             blockText.isBlank() -> false
             blockTurnId != null && stoppedTurnIds.contains(blockTurnId) -> false
-            blockEnd == latestBlockEnd && latestTerminalPhase == CommandPhase.STOPPED -> false
+            isLatestBlock && latestTerminalPhase == CommandPhase.STOPPED -> false
             !isThreadRunning -> true
             blockTurnId != null && activeTurnId != null -> blockTurnId != activeTurnId
-            else -> blockEnd != latestBlockEnd
+            else -> !isLatestBlock
         }
         if (shouldShowCopyButton) {
             result[messages[blockEnd].id] = blockText
