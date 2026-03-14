@@ -211,6 +211,58 @@ class TurnViewModelTest {
     }
 
     @Test
+    fun slashCommandInputShowsCommandPanelForCodex() {
+        val viewModel = TurnViewModel()
+
+        viewModel.onInputChangedForSlashCommandAutocomplete("/rev", isEnabled = true)
+
+        assertEquals(
+            TurnComposerSlashCommandPanelState.Commands("rev"),
+            viewModel.slashCommandPanelState,
+        )
+    }
+
+    @Test
+    fun selectingReviewTargetArmsConfirmedReviewSelection() {
+        val viewModel = TurnViewModel()
+
+        val updatedInput = viewModel.onSelectSlashCommand("/review", TurnComposerSlashCommand.CODE_REVIEW)
+        val finalInput = viewModel.onSelectCodeReviewTarget(
+            updatedInput,
+            TurnComposerReviewTarget.UNCOMMITTED_CHANGES,
+        )
+
+        assertEquals("", finalInput)
+        assertEquals(
+            TurnComposerReviewSelection(
+                command = TurnComposerSlashCommand.CODE_REVIEW,
+                target = TurnComposerReviewTarget.UNCOMMITTED_CHANGES,
+            ),
+            viewModel.composerReviewSelection,
+        )
+        assertEquals(TurnComposerSlashCommandPanelState.Hidden, viewModel.slashCommandPanelState)
+    }
+
+    @Test
+    fun pendingReviewSelectionDisablesSend() {
+        val viewModel = TurnViewModel()
+        viewModel.composerReviewSelection = TurnComposerReviewSelection(
+            command = TurnComposerSlashCommand.CODE_REVIEW,
+            target = null,
+        )
+
+        val presentation = viewModel.composerPresentation(
+            input = "",
+            isConnected = true,
+            queuedDraftCount = 0,
+            queuePauseMessage = null,
+        )
+
+        assertTrue(presentation.hasPendingReviewSelection)
+        assertFalse(presentation.canSend)
+    }
+
+    @Test
     fun removeComposerAttachmentClearsFailureNoticeWhenNoFailedRemain() {
         val viewModel = TurnViewModel()
         viewModel.composerAttachments = listOf(

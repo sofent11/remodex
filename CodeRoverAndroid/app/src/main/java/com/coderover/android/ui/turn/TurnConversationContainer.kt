@@ -17,6 +17,7 @@ import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ApprovalRequest
 import com.coderover.android.data.model.AssistantRevertPresentation
 import com.coderover.android.data.model.ChatMessage
+import com.coderover.android.data.model.CodeRoverReviewTarget
 import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
 
@@ -35,6 +36,8 @@ internal fun TurnConversationContainer(
     pendingApproval: ApprovalRequest?,
     onInputChanged: (String) -> Unit,
     onSend: (String, List<ImageAttachment>, List<TurnSkillMention>, Boolean) -> Unit,
+    onStartReview: (String, CodeRoverReviewTarget, String?) -> Unit,
+    onShowStatus: () -> Unit,
     onStop: () -> Unit,
     onReconnect: () -> Unit,
     onSelectModel: (String?) -> Unit,
@@ -81,6 +84,8 @@ internal fun TurnConversationContainer(
             isRunning = isRunning,
             onInputChanged = onInputChanged,
             onSend = onSend,
+            onStartReview = onStartReview,
+            onShowStatus = onShowStatus,
             onStop = onStop,
             onReconnect = onReconnect,
             onSelectModel = onSelectModel,
@@ -99,6 +104,8 @@ internal fun TurnComposerSlot(
     isRunning: Boolean,
     onInputChanged: (String) -> Unit,
     onSend: (String, List<ImageAttachment>, List<TurnSkillMention>, Boolean) -> Unit,
+    onStartReview: (String, CodeRoverReviewTarget, String?) -> Unit,
+    onShowStatus: () -> Unit,
     onStop: () -> Unit,
     onReconnect: () -> Unit,
     onSelectModel: (String?) -> Unit,
@@ -113,6 +120,8 @@ internal fun TurnComposerSlot(
         onInputChanged = onInputChanged,
         isRunning = isRunning,
         onSend = onSend,
+        onStartReview = onStartReview,
+        onShowStatus = onShowStatus,
         onStop = onStop,
         onReconnect = onReconnect,
         onSelectModel = onSelectModel,

@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import com.coderover.android.data.model.AccessMode
 import com.coderover.android.data.model.AppFontStyle
+import com.coderover.android.data.model.CodeRoverReviewTarget
 import com.coderover.android.data.repository.CodeRoverRepository
 import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
@@ -76,6 +77,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         skillMentions: List<TurnSkillMention> = emptyList(),
         usePlanMode: Boolean = false,
     ) = repository.sendMessage(text, attachments, skillMentions, usePlanMode)
+
+    fun startReview(
+        threadId: String,
+        target: CodeRoverReviewTarget,
+        baseBranch: String? = null,
+    ) = repository.startReview(threadId, target, baseBranch)
+
+    fun refreshContextWindowUsage(threadId: String) = repository.refreshContextWindowUsage(threadId)
+
+    fun refreshRateLimits() = repository.refreshRateLimits()
 
     fun interruptActiveTurn() = repository.interruptActiveTurn()
 

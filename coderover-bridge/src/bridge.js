@@ -12,6 +12,7 @@ const { createCodexTransport } = require("./codex-transport");
 const { printQR } = require("./qr");
 const { rememberActiveThread } = require("./session-state");
 const { handleGitRequest } = require("./git-handler");
+const { handleThreadContextRequest } = require("./thread-context-handler");
 const { handleWorkspaceRequest } = require("./workspace-handler");
 const { createRuntimeManager } = require("./runtime-manager");
 const { loadOrCreateBridgeDeviceState } = require("./secure-device-state");
@@ -105,6 +106,9 @@ function startBridge() {
 
   // Routes decrypted app payloads through the same bridge handlers as before.
   function handleApplicationMessage(rawMessage) {
+    if (handleThreadContextRequest(rawMessage, sendApplicationResponse)) {
+      return;
+    }
     if (handleWorkspaceRequest(rawMessage, sendApplicationResponse)) {
       return;
     }

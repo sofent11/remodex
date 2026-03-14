@@ -195,6 +195,9 @@ extension CodeRoverService {
         case "thread/tokenUsage/updated":
             handleThreadTokenUsageUpdated(paramsObject)
 
+        case "account/rateLimits/updated":
+            handleRateLimitsUpdated(paramsObject)
+
         case "item/completed", "coderover/event/item_completed", "coderover/event/agent_message":
             appendCompletedAgentText(from: paramsObject)
 
@@ -511,22 +514,8 @@ extension CodeRoverService {
             ?? eventObject?["usage"]?.objectValue
             ?? paramsObject
 
-        let tokensUsed = firstIntValue(
-            in: usageObject,
-            keys: ["tokensUsed", "tokens_used", "totalTokens", "total_tokens"]
-        ) ?? 0
-
-        let tokenLimit = firstIntValue(
-            in: usageObject,
-            keys: ["tokenLimit", "token_limit", "maxTokens", "max_tokens", "contextWindow", "context_window"]
-        ) ?? 0
-
-        guard tokenLimit > 0 else { return }
-
-        contextWindowUsageByThread[threadId] = ContextWindowUsage(
-            tokensUsed: tokensUsed,
-            tokenLimit: tokenLimit
-        )
+        guard let usage = extractContextWindowUsage(from: usageObject) else { return }
+        contextWindowUsageByThread[threadId] = usage
     }
 
     private func handleThreadStatusChanged(_ paramsObject: IncomingParamsObject?) {

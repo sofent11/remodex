@@ -10,6 +10,9 @@ import com.coderover.android.data.model.CLOCK_SKEW_TOLERANCE_MS
 import com.coderover.android.data.model.CommandPhase
 import com.coderover.android.data.model.CommandState
 import com.coderover.android.data.model.ConnectionPhase
+import com.coderover.android.data.model.CodeRoverRateLimitBucket
+import com.coderover.android.data.model.CodeRoverRateLimitWindow
+import com.coderover.android.data.model.CodeRoverReviewTarget
 import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
 import com.coderover.android.data.model.FileChangeEntry
@@ -43,6 +46,7 @@ import com.coderover.android.data.model.asIntOrNull
 import com.coderover.android.data.model.bool
 import com.coderover.android.data.model.copyWith
 import com.coderover.android.data.model.int
+import com.coderover.android.data.model.parseTimestamp
 import com.coderover.android.data.model.responseKey
 import com.coderover.android.data.model.string
 import com.coderover.android.data.model.stringOrNull
@@ -52,6 +56,7 @@ import com.coderover.android.data.network.SecureBridgeClient
 import com.coderover.android.data.network.SecureCrypto
 import com.coderover.android.data.storage.PairingStore
 import com.coderover.android.data.storage.UserPreferencesStore
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
@@ -461,6 +466,9 @@ class CodeRoverRepository(context: Context) {
         scope.launch {
             loadThreadHistory(threadId)
         }
+        scope.launch {
+            refreshContextWindowUsage(threadId)
+        }
     }
 
     fun clearSelectedThread() {
@@ -730,6 +738,146 @@ class CodeRoverRepository(context: Context) {
                         orderIndex = nextOrderIndex(),
                     ),
                 )
+            }
+        }
+    }
+
+    fun startReview(
+        threadId: String,
+        target: CodeRoverReviewTarget,
+        baseBranch: String? = null,
+    ) {
+        scope.launch {
+            val normalizedThreadId = threadId.trim()
+            if (normalizedThreadId.isEmpty()) {
+                updateError("Choose a conversation before starting a review.")
+                return@launch
+            }
+            val normalizedProvider = normalizeProviderId(
+                state.value.threads.firstOrNull { it.id == normalizedThreadId }?.provider,
+            )
+            if (normalizedProvider != "codex") {
+                updateError("Code review is only available in Codex conversations.")
+                return@launch
+            }
+
+            val promptText = reviewPromptText(target, baseBranch)
+            appendLocalMessage(
+                ChatMessage(
+                    threadId = normalizedThreadId,
+                    role = MessageRole.USER,
+                    text = promptText,
+                    orderIndex = nextOrderIndex(),
+                ),
+            )
+            updateState {
+                copy(
+                    runningThreadIds = runningThreadIds + normalizedThreadId,
+                    lastErrorMessage = null,
+                )
+            }
+
+            runCatching {
+                requestWithSandboxFallback(
+                    "review/start",
+                    buildReviewStartParams(
+                        threadId = normalizedThreadId,
+                        target = target,
+                        baseBranch = baseBranch,
+                    ),
+                )
+            }.onFailure { failure ->
+                removeLatestMatchingUserMessage(
+                    threadId = normalizedThreadId,
+                    text = promptText,
+                    attachments = emptyList(),
+                )
+                updateState {
+                    copy(
+                        runningThreadIds = runningThreadIds - normalizedThreadId,
+                        lastErrorMessage = failure.message ?: "Unable to start review.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun refreshContextWindowUsage(threadId: String) {
+        scope.launch {
+            val normalizedThreadId = threadId.trim()
+            if (normalizedThreadId.isEmpty()) {
+                return@launch
+            }
+            val normalizedProvider = normalizeProviderId(
+                state.value.threads.firstOrNull { it.id == normalizedThreadId }?.provider,
+            )
+            if (normalizedProvider != "codex") {
+                return@launch
+            }
+
+            val params = buildJsonObject(
+                "threadId" to JsonPrimitive(normalizedThreadId),
+                "turnId" to state.value.activeTurnIdByThread[normalizedThreadId]
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+                    ?.let(::JsonPrimitive),
+            )
+
+            runCatching {
+                activeClient().sendRequest("thread/contextWindow/read", params)?.jsonObjectOrNull()
+            }.onSuccess { response ->
+                val usageObject = response?.get("result")?.jsonObjectOrNull()?.get("usage")?.jsonObjectOrNull()
+                    ?: response?.get("usage")?.jsonObjectOrNull()
+                val usage = extractContextWindowUsage(usageObject) ?: return@onSuccess
+                updateState {
+                    copy(contextWindowUsageByThread = contextWindowUsageByThread + (normalizedThreadId to usage))
+                }
+            }.onFailure { failure ->
+                Log.d(TAG, "thread/contextWindow/read failed (non-fatal): ${failure.message}")
+            }
+        }
+    }
+
+    fun refreshRateLimits() {
+        scope.launch {
+            if (currentRuntimeProviderId() != "codex") {
+                updateState {
+                    copy(
+                        rateLimitBuckets = emptyList(),
+                        isLoadingRateLimits = false,
+                        rateLimitsErrorMessage = null,
+                    )
+                }
+                return@launch
+            }
+
+            updateState {
+                copy(
+                    isLoadingRateLimits = true,
+                    rateLimitsErrorMessage = null,
+                )
+            }
+
+            runCatching {
+                fetchRateLimitsWithCompatRetry()
+            }.onSuccess { response ->
+                val payload = response?.get("result")?.jsonObjectOrNull() ?: response ?: JsonObject(emptyMap())
+                applyRateLimitsPayload(payload, mergeWithExisting = false)
+                updateState {
+                    copy(
+                        isLoadingRateLimits = false,
+                        rateLimitsErrorMessage = null,
+                    )
+                }
+            }.onFailure { failure ->
+                updateState {
+                    copy(
+                        rateLimitBuckets = emptyList(),
+                        isLoadingRateLimits = false,
+                        rateLimitsErrorMessage = failure.message?.trim().takeUnless { it.isNullOrEmpty() }
+                            ?: "Unable to load rate limits",
+                    )
+                }
             }
         }
     }
@@ -1305,6 +1453,7 @@ class CodeRoverRepository(context: Context) {
                 copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
             }
         }
+        extractContextWindowUsageIfAvailable(threadId, threadObject)
         val history = decodeMessagesFromThreadRead(threadId, threadObject)
         val activeTurnId = resolveActiveTurnId(threadObject)
         if (history.isNotEmpty()) {
@@ -2285,6 +2434,10 @@ class CodeRoverRepository(context: Context) {
                 handleThreadTokenUsageUpdated(params)
             }
 
+            "account/rateLimits/updated" -> {
+                handleRateLimitsUpdated(params)
+            }
+
             "turn/started" -> {
                 val threadId = params.resolveThreadId() ?: return
                 val turnId = params.resolveTurnId()
@@ -2625,33 +2778,56 @@ class CodeRoverRepository(context: Context) {
             ?: params?.get("event")?.jsonObjectOrNull()?.get("usage")?.jsonObjectOrNull()
             ?: params
             ?: return
-        val usedTokens = firstNonNull(
-            usageObject.int("tokensUsed"),
-            usageObject.int("tokens_used"),
-            usageObject.int("totalTokens"),
-            usageObject.int("total_tokens"),
-        ) ?: return
-        val totalTokens = firstNonNull(
-            usageObject.int("tokenLimit"),
-            usageObject.int("token_limit"),
-            usageObject.int("maxTokens"),
-            usageObject.int("max_tokens"),
-            usageObject.int("contextWindow"),
-            usageObject.int("context_window"),
-        ) ?: return
-        if (totalTokens <= 0) {
-            return
-        }
+        val usage = extractContextWindowUsage(usageObject) ?: return
         updateState {
             copy(
-                contextWindowUsageByThread = contextWindowUsageByThread + (
-                    threadId to com.coderover.android.data.model.ContextWindowUsage(
-                        tokensUsed = usedTokens,
-                        tokenLimit = totalTokens,
-                    )
-                ),
+                contextWindowUsageByThread = contextWindowUsageByThread + (threadId to usage),
             )
         }
+    }
+
+    private fun handleRateLimitsUpdated(params: JsonObject?) {
+        val payload = params ?: return
+        applyRateLimitsPayload(payload, mergeWithExisting = true)
+        updateState { copy(rateLimitsErrorMessage = null) }
+    }
+
+    private fun extractContextWindowUsageIfAvailable(threadId: String, threadObject: JsonObject) {
+        val usageObject = threadObject["usage"]?.jsonObjectOrNull()
+            ?: threadObject["tokenUsage"]?.jsonObjectOrNull()
+            ?: threadObject["token_usage"]?.jsonObjectOrNull()
+            ?: threadObject["contextWindow"]?.jsonObjectOrNull()
+            ?: threadObject["context_window"]?.jsonObjectOrNull()
+        val usage = extractContextWindowUsage(usageObject) ?: return
+        updateState {
+            copy(contextWindowUsageByThread = contextWindowUsageByThread + (threadId to usage))
+        }
+    }
+
+    private fun extractContextWindowUsage(usageObject: JsonObject?): com.coderover.android.data.model.ContextWindowUsage? {
+        val objectValue = usageObject ?: return null
+        val usedTokens = firstNonNull(
+            objectValue.int("tokensUsed"),
+            objectValue.int("tokens_used"),
+            objectValue.int("totalTokens"),
+            objectValue.int("total_tokens"),
+            objectValue.int("input_tokens"),
+        ) ?: 0
+        val totalTokens = firstNonNull(
+            objectValue.int("tokenLimit"),
+            objectValue.int("token_limit"),
+            objectValue.int("maxTokens"),
+            objectValue.int("max_tokens"),
+            objectValue.int("contextWindow"),
+            objectValue.int("context_window"),
+        ) ?: 0
+        if (totalTokens <= 0) {
+            return null
+        }
+        return com.coderover.android.data.model.ContextWindowUsage(
+            tokensUsed = usedTokens,
+            tokenLimit = totalTokens,
+        )
     }
 
     private suspend fun handleLegacyCodeRoverEnvelopeEvent(params: JsonObject?): Boolean {
@@ -2966,6 +3142,245 @@ class CodeRoverRepository(context: Context) {
                 lastErrorMessage = outcome.userVisibleError,
             )
         }
+    }
+
+    private fun buildReviewStartParams(
+        threadId: String,
+        target: CodeRoverReviewTarget,
+        baseBranch: String?,
+    ): JsonObject {
+        val targetObject = when (target) {
+            CodeRoverReviewTarget.UNCOMMITTED_CHANGES -> {
+                buildJsonObject("type" to JsonPrimitive("uncommittedChanges"))
+            }
+
+            CodeRoverReviewTarget.BASE_BRANCH -> {
+                val normalizedBranch = baseBranch?.trim()?.takeIf(String::isNotEmpty)
+                    ?: throw IllegalArgumentException("Choose a base branch before starting this review.")
+                buildJsonObject(
+                    "type" to JsonPrimitive("baseBranch"),
+                    "branch" to JsonPrimitive(normalizedBranch),
+                )
+            }
+        }
+
+        return buildJsonObject(
+            "threadId" to JsonPrimitive(threadId),
+            "delivery" to JsonPrimitive("inline"),
+            "target" to targetObject,
+        )
+    }
+
+    private fun reviewPromptText(target: CodeRoverReviewTarget, baseBranch: String?): String {
+        return when (target) {
+            CodeRoverReviewTarget.UNCOMMITTED_CHANGES -> "Review current changes"
+            CodeRoverReviewTarget.BASE_BRANCH -> {
+                val normalizedBranch = baseBranch?.trim().takeUnless { it.isNullOrEmpty() }
+                if (normalizedBranch != null) {
+                    "Review against base branch $normalizedBranch"
+                } else {
+                    "Review against base branch"
+                }
+            }
+        }
+    }
+
+    private suspend fun fetchRateLimitsWithCompatRetry(): JsonObject? {
+        return try {
+            activeClient().sendRequest("account/rateLimits/read", null)?.jsonObjectOrNull()
+        } catch (failure: Throwable) {
+            if (!shouldRetryRateLimitsWithEmptyParams(failure)) {
+                throw failure
+            }
+            activeClient().sendRequest("account/rateLimits/read", JsonObject(emptyMap()))?.jsonObjectOrNull()
+        }
+    }
+
+    private fun applyRateLimitsPayload(payload: JsonObject, mergeWithExisting: Boolean) {
+        val decodedBuckets = decodeRateLimitBuckets(payload)
+        val resolvedBuckets = if (mergeWithExisting) {
+            mergeRateLimitBuckets(state.value.rateLimitBuckets, decodedBuckets)
+        } else {
+            decodedBuckets
+        }
+        updateState {
+            copy(
+                rateLimitBuckets = resolvedBuckets.sortedWith(
+                    compareBy<CodeRoverRateLimitBucket>({ it.sortDurationMins }, { it.displayLabel.lowercase() }),
+                ),
+            )
+        }
+    }
+
+    private fun decodeRateLimitBuckets(payload: JsonObject): List<CodeRoverRateLimitBucket> {
+        payload["rateLimitsByLimitId"]?.jsonObjectOrNull()?.let { keyedBuckets ->
+            return keyedBuckets.mapNotNull { (limitId, value) ->
+                decodeRateLimitBucket(limitId, value)
+            }
+        }
+        payload["rate_limits_by_limit_id"]?.jsonObjectOrNull()?.let { keyedBuckets ->
+            return keyedBuckets.mapNotNull { (limitId, value) ->
+                decodeRateLimitBucket(limitId, value)
+            }
+        }
+
+        val nestedBuckets = payload["rateLimits"]?.jsonObjectOrNull()
+            ?: payload["rate_limits"]?.jsonObjectOrNull()
+        if (nestedBuckets != null) {
+            if (containsDirectRateLimitWindows(nestedBuckets)) {
+                return decodeDirectRateLimitBuckets(nestedBuckets)
+            }
+            decodeRateLimitBucket(null, nestedBuckets)?.let { return listOf(it) }
+        }
+
+        payload["result"]?.jsonObjectOrNull()?.let { result ->
+            return decodeRateLimitBuckets(result)
+        }
+
+        if (containsDirectRateLimitWindows(payload)) {
+            return decodeDirectRateLimitBuckets(payload)
+        }
+
+        return emptyList()
+    }
+
+    private fun decodeRateLimitBucket(
+        explicitLimitId: String?,
+        value: JsonElement,
+    ): CodeRoverRateLimitBucket? {
+        val objectValue = value.jsonObjectOrNull() ?: return null
+        val limitId = explicitLimitId
+            ?: firstNonBlank(
+                objectValue.string("limitId"),
+                objectValue.string("limit_id"),
+                objectValue.string("id"),
+            )
+            ?: UUID.randomUUID().toString()
+        val primary = decodeRateLimitWindow(
+            objectValue["primary"] ?: objectValue["primary_window"],
+        )
+        val secondary = decodeRateLimitWindow(
+            objectValue["secondary"] ?: objectValue["secondary_window"],
+        )
+        if (primary == null && secondary == null) {
+            return null
+        }
+        return CodeRoverRateLimitBucket(
+            limitId = limitId,
+            limitName = firstNonBlank(
+                objectValue.string("limitName"),
+                objectValue.string("limit_name"),
+                objectValue.string("name"),
+            ),
+            primary = primary,
+            secondary = secondary,
+        )
+    }
+
+    private fun decodeDirectRateLimitBuckets(objectValue: JsonObject): List<CodeRoverRateLimitBucket> {
+        val buckets = mutableListOf<CodeRoverRateLimitBucket>()
+        decodeRateLimitWindow(objectValue["primary"] ?: objectValue["primary_window"])?.let { primary ->
+            buckets += CodeRoverRateLimitBucket(
+                limitId = "primary",
+                limitName = firstNonBlank(
+                    objectValue.string("limitName"),
+                    objectValue.string("limit_name"),
+                    objectValue.string("name"),
+                ),
+                primary = primary,
+                secondary = null,
+            )
+        }
+        decodeRateLimitWindow(objectValue["secondary"] ?: objectValue["secondary_window"])?.let { secondary ->
+            buckets += CodeRoverRateLimitBucket(
+                limitId = "secondary",
+                limitName = firstNonBlank(
+                    objectValue.string("secondaryName"),
+                    objectValue.string("secondary_name"),
+                ),
+                primary = secondary,
+                secondary = null,
+            )
+        }
+        return buckets
+    }
+
+    private fun decodeRateLimitWindow(value: JsonElement?): CodeRoverRateLimitWindow? {
+        val objectValue = value?.jsonObjectOrNull() ?: return null
+        val usedPercent = firstNonNull(
+            objectValue.int("usedPercent"),
+            objectValue.int("used_percent"),
+        ) ?: 0
+        val durationMins = firstNonNull(
+            objectValue.int("windowDurationMins"),
+            objectValue.int("window_duration_mins"),
+            objectValue.int("windowMinutes"),
+            objectValue.int("window_minutes"),
+        )
+        val resetsAtMillis = firstResetTimestampMillis(objectValue)
+        return CodeRoverRateLimitWindow(
+            usedPercent = usedPercent,
+            windowDurationMins = durationMins,
+            resetsAtMillis = resetsAtMillis,
+        )
+    }
+
+    private fun containsDirectRateLimitWindows(objectValue: JsonObject): Boolean {
+        return objectValue["primary"] != null ||
+            objectValue["secondary"] != null ||
+            objectValue["primary_window"] != null ||
+            objectValue["secondary_window"] != null
+    }
+
+    private fun mergeRateLimitBuckets(
+        existing: List<CodeRoverRateLimitBucket>,
+        incoming: List<CodeRoverRateLimitBucket>,
+    ): List<CodeRoverRateLimitBucket> {
+        if (existing.isEmpty()) return incoming
+        if (incoming.isEmpty()) return existing
+
+        val merged = existing.associateByTo(linkedMapOf(), CodeRoverRateLimitBucket::limitId).toMutableMap()
+        incoming.forEach { bucket ->
+            val current = merged[bucket.limitId]
+            merged[bucket.limitId] = if (current == null) {
+                bucket
+            } else {
+                CodeRoverRateLimitBucket(
+                    limitId = bucket.limitId,
+                    limitName = bucket.limitName ?: current.limitName,
+                    primary = bucket.primary ?: current.primary,
+                    secondary = bucket.secondary ?: current.secondary,
+                )
+            }
+        }
+        return merged.values.toList()
+    }
+
+    private fun shouldRetryRateLimitsWithEmptyParams(error: Throwable): Boolean {
+        val message = error.message?.lowercase().orEmpty()
+        return message.contains("params") || message.contains("invalid request")
+    }
+
+    private fun firstResetTimestampMillis(objectValue: JsonObject): Long? {
+        val numeric = objectValue["resetsAt"]?.jsonObjectOrNull()
+        if (numeric != null) {
+            return null
+        }
+        val rawNumeric = (objectValue["resetsAt"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
+            ?: (objectValue["resets_at"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
+            ?: (objectValue["resetAt"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
+            ?: (objectValue["reset_at"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
+        if (rawNumeric != null) {
+            val millis = if (rawNumeric > 10_000_000_000L) rawNumeric.toLong() else (rawNumeric * 1000.0).toLong()
+            return millis
+        }
+
+        return firstNonBlank(
+            objectValue.string("resetsAt"),
+            objectValue.string("resets_at"),
+            objectValue.string("resetAt"),
+            objectValue.string("reset_at"),
+        )?.let(::parseTimestamp)
     }
 
     private fun currentRuntimeProviderId(): String {

@@ -362,6 +362,10 @@ private fun CodeRoverAppShell(
                                 viewModel.sendMessage(text, attachments, skillMentions, usePlanMode)
                                 messageInput = ""
                             },
+                            onStartReview = { threadId, target, baseBranch ->
+                                viewModel.startReview(threadId, target, baseBranch)
+                                messageInput = ""
+                            },
                             onStop = viewModel::interruptActiveTurn,
                             onReconnect = viewModel::connectActivePairing,
                             onSelectModel = viewModel::setSelectedModelId,

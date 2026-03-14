@@ -13,6 +13,8 @@ const DEFAULT_WATCH_INTERVAL_MS = 1_000;
 const DEFAULT_LOOKUP_TIMEOUT_MS = 5_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 10_000;
 const DEFAULT_TRANSIENT_ERROR_RETRY_LIMIT = 2;
+const DEFAULT_CONTEXT_READ_SCAN_BYTES = 512 * 1024;
+const DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT = 24;
 
 // Polls one rollout file until it materializes and then reports size growth.
 function createThreadRolloutActivityWatcher({
@@ -231,6 +233,251 @@ function findRolloutFileForThread(root, threadId, { fsModule = fs } = {}) {
   return null;
 }
 
+function readLatestContextWindowUsage({
+  threadId,
+  turnId = "",
+  root = resolveSessionsRoot(),
+  fsModule = fs,
+  scanBytes = DEFAULT_CONTEXT_READ_SCAN_BYTES,
+} = {}) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  const normalizedTurnId = typeof turnId === "string" ? turnId.trim() : "";
+  if (!normalizedThreadId && !normalizedTurnId) {
+    return null;
+  }
+
+  const rolloutPath = findRolloutFileForThread(root, normalizedThreadId, { fsModule })
+    || findRecentRolloutFileForContextRead(root, {
+      threadId: normalizedThreadId,
+      turnId: normalizedTurnId,
+      fsModule,
+    });
+  if (!rolloutPath) {
+    return null;
+  }
+
+  const stat = fsModule.statSync(rolloutPath);
+  const start = Math.max(0, stat.size - Math.max(0, scanBytes));
+  const chunk = fsModule.readFileSync(rolloutPath, { encoding: "utf8" }).slice(start);
+  const lines = chunk.split("\n");
+  if (start > 0 && lines.length > 0) {
+    lines.shift();
+  }
+
+  let latestUsage = null;
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    const usage = extractContextWindowUsage(parsed);
+    if (usage) {
+      latestUsage = usage;
+    }
+  }
+
+  if (!latestUsage) {
+    return null;
+  }
+
+  return {
+    rolloutPath,
+    usage: latestUsage,
+  };
+}
+
+function findRecentRolloutFileForContextRead(
+  root,
+  {
+    threadId = "",
+    turnId = "",
+    fsModule = fs,
+    candidateLimit = DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT,
+    scanBytes = 16 * 1024,
+  } = {}
+) {
+  const candidates = collectRecentRolloutFiles(root, { fsModule, candidateLimit });
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  if (turnId) {
+    for (const candidate of candidates) {
+      if (rolloutFileContainsToken(candidate.filePath, turnId, { fsModule, scanBytes })) {
+        return candidate.filePath;
+      }
+    }
+  }
+
+  if (threadId) {
+    for (const candidate of candidates) {
+      if (rolloutFileContainsToken(candidate.filePath, threadId, { fsModule, scanBytes })) {
+        return candidate.filePath;
+      }
+    }
+  }
+
+  return null;
+}
+
+function collectRecentRolloutFiles(
+  root,
+  {
+    fsModule = fs,
+    candidateLimit = DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT,
+  } = {}
+) {
+  if (!root || !fsModule.existsSync(root)) {
+    return [];
+  }
+
+  const stack = [root];
+  const files = [];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    const entries = fsModule.readdirSync(current, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      if (!entry.name.startsWith("rollout-") || !entry.name.endsWith(".jsonl")) {
+        continue;
+      }
+
+      let modifiedAtMs = 0;
+      try {
+        modifiedAtMs = fsModule.statSync(fullPath).mtimeMs || 0;
+      } catch {
+        modifiedAtMs = 0;
+      }
+
+      files.push({
+        filePath: fullPath,
+        modifiedAtMs,
+      });
+    }
+  }
+
+  return files
+    .sort((lhs, rhs) => rhs.modifiedAtMs - lhs.modifiedAtMs)
+    .slice(0, candidateLimit);
+}
+
+function rolloutFileContainsToken(
+  filePath,
+  token,
+  {
+    fsModule = fs,
+    scanBytes = 16 * 1024,
+  } = {}
+) {
+  const normalizedToken = typeof token === "string" ? token.trim() : "";
+  if (!filePath || !normalizedToken) {
+    return false;
+  }
+
+  const stat = fsModule.statSync(filePath);
+  const start = Math.max(0, stat.size - Math.max(0, scanBytes));
+  const chunk = fsModule.readFileSync(filePath, { encoding: "utf8" }).slice(start);
+  return chunk.includes(normalizedToken);
+}
+
+function extractContextWindowUsage(root) {
+  const usage = normalizeContextWindowUsage(root);
+  if (usage) {
+    return usage;
+  }
+
+  if (!root || typeof root !== "object") {
+    return null;
+  }
+
+  if (Array.isArray(root)) {
+    let latest = null;
+    for (const value of root) {
+      const nested = extractContextWindowUsage(value);
+      if (nested) {
+        latest = nested;
+      }
+    }
+    return latest;
+  }
+
+  let latest = null;
+  for (const value of Object.values(root)) {
+    const nested = extractContextWindowUsage(value);
+    if (nested) {
+      latest = nested;
+    }
+  }
+  return latest;
+}
+
+function normalizeContextWindowUsage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const tokensUsed = firstFiniteNumber(value, [
+    "tokensUsed",
+    "tokens_used",
+    "totalTokens",
+    "total_tokens",
+    "input_tokens",
+  ]);
+  const tokenLimit = firstFiniteNumber(value, [
+    "tokenLimit",
+    "token_limit",
+    "maxTokens",
+    "max_tokens",
+    "contextWindow",
+    "context_window",
+  ]);
+
+  if (!Number.isFinite(tokensUsed) || !Number.isFinite(tokenLimit) || tokenLimit <= 0) {
+    return null;
+  }
+
+  return {
+    tokensUsed: Math.max(0, Math.round(tokensUsed)),
+    tokenLimit: Math.max(0, Math.round(tokenLimit)),
+  };
+}
+
+function firstFiniteNumber(object, keys) {
+  for (const key of keys) {
+    const value = object[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string") {
+      const parsed = Number(value.trim());
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
 function formatRolloutLine(rawLine) {
   const trimmed = rawLine.trim();
   if (!trimmed) {
@@ -303,6 +550,7 @@ function isRetryableFilesystemError(error) {
 module.exports = {
   watchThreadRollout,
   createThreadRolloutActivityWatcher,
+  readLatestContextWindowUsage,
   resolveSessionsRoot,
   findRolloutFileForThread,
 };

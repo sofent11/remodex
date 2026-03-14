@@ -26,13 +26,15 @@ struct TurnComposerHostView: View {
     let isGitBranchSelectorEnabled: Bool
     let onSelectGitBranch: (String) -> Void
     let onRefreshGitBranches: () -> Void
+    let onShowStatus: () -> Void
     let onReconnect: () -> Void
     let onSend: () -> Void
 
     // ─── ENTRY POINT ─────────────────────────────────────────────
     var body: some View {
+        let isCodexThread = coderover.runtimeProviderID(for: thread.provider) == "codex"
         let runtimeCapabilities = thread.capabilities ?? coderover.currentRuntimeProvider().supports
-        let supportsPlanMode = runtimeCapabilities.planMode && coderover.supportsTurnCollaborationMode
+        let supportsPlanMode = isCodexThread && runtimeCapabilities.planMode && coderover.supportsTurnCollaborationMode
         let supportsReasoningOptions = runtimeCapabilities.reasoningOptions
         let supportsTurnSteer = runtimeCapabilities.turnSteer
 
@@ -62,6 +64,9 @@ struct TurnComposerHostView: View {
             isSkillAutocompleteVisible: viewModel.isSkillAutocompleteVisible,
             isSkillAutocompleteLoading: viewModel.isSkillAutocompleteLoading,
             skillAutocompleteQuery: viewModel.skillAutocompleteQuery,
+            slashCommandPanelState: isCodexThread ? viewModel.slashCommandPanelState : .hidden,
+            composerReviewSelection: isCodexThread ? viewModel.composerReviewSelection : nil,
+            hasComposerContentConflictingWithReview: viewModel.hasComposerContentConflictingWithReview,
             orderedModelOptions: orderedModelOptions,
             selectedModelID: coderover.selectedModelOption()?.id,
             selectedModelTitle: selectedModelTitle,
@@ -115,10 +120,25 @@ struct TurnComposerHostView: View {
                     activeTurnID: activeTurnID
                 )
             },
+            onInputChangedForSlashCommandAutocomplete: { text in
+                viewModel.onInputChangedForSlashCommandAutocomplete(
+                    text,
+                    activeTurnID: activeTurnID,
+                    isEnabled: isCodexThread
+                )
+            },
             onSelectFileAutocomplete: viewModel.onSelectFileAutocomplete,
             onSelectSkillAutocomplete: viewModel.onSelectSkillAutocomplete,
+            onSelectSlashCommand: { command in
+                viewModel.onSelectSlashCommand(command)
+                if command == .status {
+                    onShowStatus()
+                }
+            },
+            onSelectCodeReviewTarget: viewModel.onSelectCodeReviewTarget,
             onRemoveMentionedFile: viewModel.removeMentionedFile,
             onRemoveMentionedSkill: viewModel.removeMentionedSkill,
+            onRemoveComposerReviewSelection: viewModel.clearComposerReviewSelection,
             onPasteImageData: { imageDataItems in
                 viewModel.enqueuePastedImageData(imageDataItems, coderover: coderover)
             },

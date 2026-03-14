@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import com.coderover.android.app.AppViewModel
 import com.coderover.android.data.model.AccessMode
 import com.coderover.android.data.model.AppState
+import com.coderover.android.data.model.CodeRoverReviewTarget
 import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
 import com.coderover.android.ui.turn.TurnComposer
@@ -28,6 +29,8 @@ fun ComposerCard(
         onInputChanged = onInputChanged,
         isRunning = isRunning,
         onSend = onSend,
+        onStartReview = { _: String, _: CodeRoverReviewTarget, _: String? -> },
+        onShowStatus = {},
         onStop = onStop,
         onReconnect = onReconnect,
         onSelectModel = onSelectModel,

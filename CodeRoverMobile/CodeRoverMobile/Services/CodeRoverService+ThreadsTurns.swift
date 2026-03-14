@@ -7,6 +7,12 @@
 import Foundation
 
 extension CodeRoverService {
+    private struct ReviewStartRequest {
+        let promptText: String
+        let target: CodeRoverReviewTarget
+        let baseBranch: String?
+    }
+
     // Keeps sidebar/project loading focused on recent conversations without hiding
     // other active project groups when the latest chats all belong to one repo.
     var recentThreadListLimit: Int { 40 }
@@ -137,6 +143,111 @@ extension CodeRoverService {
         }
 
         activeThreadId = initialThreadId
+    }
+
+    func startReview(
+        threadId: String,
+        target: CodeRoverReviewTarget?,
+        baseBranch: String? = nil
+    ) async throws {
+        guard let target else {
+            throw CodeRoverServiceError.invalidInput("Choose a review target first.")
+        }
+
+        let request = ReviewStartRequest(
+            promptText: reviewPromptText(target: target, baseBranch: baseBranch),
+            target: target,
+            baseBranch: baseBranch
+        )
+        let initialThreadId = try await resolveThreadID(threadId)
+
+        do {
+            try await ensureThreadResumed(threadId: initialThreadId)
+        } catch {
+            if shouldTreatAsThreadNotFound(error) {
+                let resolvedThreadId = try await continueReviewStart(
+                    request,
+                    fromMissingThreadId: initialThreadId,
+                    removePendingUserMessage: false
+                )
+                activeThreadId = resolvedThreadId
+                return
+            }
+        }
+
+        do {
+            try await sendReviewStart(request, to: initialThreadId)
+        } catch {
+            if shouldTreatAsThreadNotFound(error) {
+                let resolvedThreadId = try await continueReviewStart(
+                    request,
+                    fromMissingThreadId: initialThreadId,
+                    removePendingUserMessage: true
+                )
+                activeThreadId = resolvedThreadId
+                return
+            }
+            throw error
+        }
+
+        activeThreadId = initialThreadId
+    }
+
+    func refreshContextWindowUsage(threadId: String) async {
+        let trimmedThreadID = threadId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedThreadID.isEmpty else { return }
+        guard runtimeProviderID(for: threads.first(where: { $0.id == trimmedThreadID })?.provider) == "codex" else {
+            return
+        }
+
+        var params: RPCObject = ["threadId": .string(trimmedThreadID)]
+        if let turnId = activeTurnIdByThread[trimmedThreadID]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !turnId.isEmpty {
+            params["turnId"] = .string(turnId)
+        }
+
+        do {
+            let response = try await sendRequest(method: "thread/contextWindow/read", params: .object(params))
+            guard let resultObject = response.result?.objectValue,
+                  let usageObject = resultObject["usage"]?.objectValue,
+                  let usage = extractContextWindowUsage(from: usageObject) else {
+                return
+            }
+            contextWindowUsageByThread[trimmedThreadID] = usage
+        } catch {
+            debugSyncLog("thread/contextWindow/read failed (non-fatal): \(error.localizedDescription)")
+        }
+    }
+
+    func refreshRateLimits() async {
+        guard currentRuntimeProviderID() == "codex" else {
+            rateLimitBuckets = []
+            rateLimitsErrorMessage = nil
+            return
+        }
+
+        isLoadingRateLimits = true
+        defer { isLoadingRateLimits = false }
+
+        do {
+            let response = try await fetchRateLimitsWithCompatRetry()
+            guard let resultObject = response.result?.objectValue else {
+                throw CodeRoverServiceError.invalidResponse("account/rateLimits/read response missing payload")
+            }
+
+            applyRateLimitsPayload(resultObject, mergeWithExisting: false)
+            rateLimitsErrorMessage = nil
+        } catch {
+            rateLimitBuckets = []
+            let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            rateLimitsErrorMessage = message.isEmpty ? "Unable to load rate limits" : message
+        }
+    }
+
+    func handleRateLimitsUpdated(_ paramsObject: IncomingParamsObject?) {
+        guard let paramsObject else { return }
+        applyRateLimitsPayload(paramsObject, mergeWithExisting: true)
+        rateLimitsErrorMessage = nil
     }
 
     // Requests context compaction for a thread.
@@ -376,6 +487,300 @@ extension CodeRoverService {
         return .object([
             "answers": .object(answersObject),
         ])
+    }
+
+    private func continueReviewStart(
+        _ request: ReviewStartRequest,
+        fromMissingThreadId missingThreadId: String,
+        removePendingUserMessage: Bool
+    ) async throws -> String {
+        if removePendingUserMessage {
+            removeLatestFailedUserMessage(
+                threadId: missingThreadId,
+                matchingText: request.promptText,
+                matchingAttachments: []
+            )
+        }
+        handleMissingThread(missingThreadId)
+
+        let continuationThread = try await createContinuationThread(from: missingThreadId)
+        try await ensureThreadResumed(threadId: continuationThread.id)
+        try await sendReviewStart(request, to: continuationThread.id)
+        lastErrorMessage = nil
+        return continuationThread.id
+    }
+
+    private func sendReviewStart(
+        _ request: ReviewStartRequest,
+        to threadId: String
+    ) async throws {
+        let pendingMessageId = appendUserMessage(
+            threadId: threadId,
+            text: request.promptText
+        )
+        activeThreadId = threadId
+        markThreadAsRunning(threadId)
+        protectedRunningFallbackThreadIDs.insert(threadId)
+
+        do {
+            let requestParams = try buildReviewStartParams(
+                threadId: threadId,
+                target: request.target,
+                baseBranch: request.baseBranch
+            )
+            let response = try await sendRequestWithSandboxFallback(
+                method: "review/start",
+                baseParams: requestParams
+            )
+            handleSuccessfulTurnStartResponse(
+                response,
+                pendingMessageId: pendingMessageId,
+                threadId: threadId
+            )
+        } catch {
+            try handleTurnStartFailure(
+                error,
+                pendingMessageId: pendingMessageId,
+                threadId: threadId
+            )
+        }
+    }
+
+    private func buildReviewStartParams(
+        threadId: String,
+        target: CodeRoverReviewTarget,
+        baseBranch: String?
+    ) throws -> RPCObject {
+        let targetObject: RPCObject
+
+        switch target {
+        case .uncommittedChanges:
+            targetObject = [
+                "type": .string("uncommittedChanges"),
+            ]
+        case .baseBranch:
+            let normalizedBaseBranch = baseBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let resolvedBaseBranch = normalizedBaseBranch,
+                  !resolvedBaseBranch.isEmpty else {
+                throw CodeRoverServiceError.invalidInput("Choose a base branch before starting this review.")
+            }
+            targetObject = [
+                "type": .string("baseBranch"),
+                "branch": .string(resolvedBaseBranch),
+            ]
+        }
+
+        return [
+            "threadId": .string(threadId),
+            "delivery": .string("inline"),
+            "target": .object(targetObject),
+        ]
+    }
+
+    private func reviewPromptText(target: CodeRoverReviewTarget, baseBranch: String?) -> String {
+        switch target {
+        case .uncommittedChanges:
+            return "Review current changes"
+        case .baseBranch:
+            let trimmedBaseBranch = baseBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let trimmedBaseBranch, !trimmedBaseBranch.isEmpty {
+                return "Review against base branch \(trimmedBaseBranch)"
+            }
+            return "Review against base branch"
+        }
+    }
+
+    private func fetchRateLimitsWithCompatRetry() async throws -> RPCMessage {
+        do {
+            return try await sendRequest(method: "account/rateLimits/read", params: .null)
+        } catch {
+            guard shouldRetryRateLimitsWithEmptyParams(error) else {
+                throw error
+            }
+        }
+
+        return try await sendRequest(method: "account/rateLimits/read", params: .object([:]))
+    }
+
+    private func applyRateLimitsPayload(
+        _ payloadObject: IncomingParamsObject,
+        mergeWithExisting: Bool
+    ) {
+        let decodedBuckets = decodeRateLimitBuckets(from: payloadObject)
+        let resolvedBuckets = mergeWithExisting
+            ? mergeRateLimitBuckets(existing: rateLimitBuckets, incoming: decodedBuckets)
+            : decodedBuckets
+
+        rateLimitBuckets = resolvedBuckets.sorted { lhs, rhs in
+            if lhs.sortDurationMins == rhs.sortDurationMins {
+                return lhs.displayLabel.localizedCaseInsensitiveCompare(rhs.displayLabel) == .orderedAscending
+            }
+            return lhs.sortDurationMins < rhs.sortDurationMins
+        }
+    }
+
+    private func decodeRateLimitBuckets(from payloadObject: IncomingParamsObject) -> [CodeRoverRateLimitBucket] {
+        if let keyedBuckets = payloadObject["rateLimitsByLimitId"]?.objectValue
+            ?? payloadObject["rate_limits_by_limit_id"]?.objectValue {
+            return keyedBuckets.compactMap { limitId, value in
+                decodeRateLimitBucket(limitId: limitId, value: value)
+            }
+        }
+
+        if let nestedBuckets = payloadObject["rateLimits"]?.objectValue
+            ?? payloadObject["rate_limits"]?.objectValue {
+            if containsDirectRateLimitWindows(nestedBuckets) {
+                return decodeDirectRateLimitBuckets(from: nestedBuckets)
+            }
+
+            if let decodedBucket = decodeRateLimitBucket(limitId: nil, value: .object(nestedBuckets)) {
+                return [decodedBucket]
+            }
+        }
+
+        if let nestedResult = payloadObject["result"]?.objectValue {
+            return decodeRateLimitBuckets(from: nestedResult)
+        }
+
+        if containsDirectRateLimitWindows(payloadObject) {
+            return decodeDirectRateLimitBuckets(from: payloadObject)
+        }
+
+        return []
+    }
+
+    private func decodeRateLimitBucket(
+        limitId explicitLimitId: String?,
+        value: JSONValue
+    ) -> CodeRoverRateLimitBucket? {
+        guard let object = value.objectValue else { return nil }
+
+        let limitId = firstNonEmptyString([
+            explicitLimitId,
+            firstStringValue(in: object, keys: ["limitId", "limit_id", "id"]),
+        ]) ?? UUID().uuidString
+
+        let primary = decodeRateLimitWindow(value: object["primary"] ?? object["primary_window"])
+        let secondary = decodeRateLimitWindow(value: object["secondary"] ?? object["secondary_window"])
+
+        guard primary != nil || secondary != nil else { return nil }
+
+        return CodeRoverRateLimitBucket(
+            limitId: limitId,
+            limitName: firstStringValue(in: object, keys: ["limitName", "limit_name", "name"]),
+            primary: primary,
+            secondary: secondary
+        )
+    }
+
+    private func decodeDirectRateLimitBuckets(from object: IncomingParamsObject) -> [CodeRoverRateLimitBucket] {
+        var buckets: [CodeRoverRateLimitBucket] = []
+
+        if let primary = decodeRateLimitWindow(value: object["primary"] ?? object["primary_window"]) {
+            buckets.append(
+                CodeRoverRateLimitBucket(
+                    limitId: "primary",
+                    limitName: firstStringValue(in: object, keys: ["limitName", "limit_name", "name"]),
+                    primary: primary,
+                    secondary: nil
+                )
+            )
+        }
+
+        if let secondary = decodeRateLimitWindow(value: object["secondary"] ?? object["secondary_window"]) {
+            buckets.append(
+                CodeRoverRateLimitBucket(
+                    limitId: "secondary",
+                    limitName: firstStringValue(in: object, keys: ["secondaryName", "secondary_name"]),
+                    primary: secondary,
+                    secondary: nil
+                )
+            )
+        }
+
+        return buckets
+    }
+
+    private func decodeRateLimitWindow(value: JSONValue?) -> CodeRoverRateLimitWindow? {
+        guard let object = value?.objectValue else { return nil }
+
+        let usedPercent = firstIntValue(in: object, keys: ["usedPercent", "used_percent"]) ?? 0
+        let windowDurationMins = firstIntValue(
+            in: object,
+            keys: ["windowDurationMins", "window_duration_mins", "windowMinutes", "window_minutes"]
+        )
+
+        let resetDate: Date?
+        if let rawResetsAt = object["resetsAt"]?.doubleValue
+            ?? object["resets_at"]?.doubleValue
+            ?? object["resetAt"]?.doubleValue
+            ?? object["reset_at"]?.doubleValue {
+            let secondsValue = rawResetsAt > 10_000_000_000 ? rawResetsAt / 1000 : rawResetsAt
+            resetDate = Date(timeIntervalSince1970: secondsValue)
+        } else if let rawResetsAtString = firstStringValue(
+            in: object,
+            keys: ["resetsAt", "resets_at", "resetAt", "reset_at"]
+        ) {
+            resetDate = ISO8601DateFormatter().date(from: rawResetsAtString)
+        } else {
+            resetDate = nil
+        }
+
+        return CodeRoverRateLimitWindow(
+            usedPercent: usedPercent,
+            windowDurationMins: windowDurationMins,
+            resetsAt: resetDate
+        )
+    }
+
+    private func containsDirectRateLimitWindows(_ object: IncomingParamsObject) -> Bool {
+        object["primary"] != nil
+            || object["secondary"] != nil
+            || object["primary_window"] != nil
+            || object["secondary_window"] != nil
+    }
+
+    private func mergeRateLimitBuckets(
+        existing: [CodeRoverRateLimitBucket],
+        incoming: [CodeRoverRateLimitBucket]
+    ) -> [CodeRoverRateLimitBucket] {
+        guard !existing.isEmpty else { return incoming }
+        guard !incoming.isEmpty else { return existing }
+
+        var mergedById = Dictionary(uniqueKeysWithValues: existing.map { ($0.limitId, $0) })
+        for bucket in incoming {
+            if let current = mergedById[bucket.limitId] {
+                mergedById[bucket.limitId] = CodeRoverRateLimitBucket(
+                    limitId: bucket.limitId,
+                    limitName: bucket.limitName ?? current.limitName,
+                    primary: bucket.primary ?? current.primary,
+                    secondary: bucket.secondary ?? current.secondary
+                )
+            } else {
+                mergedById[bucket.limitId] = bucket
+            }
+        }
+
+        return Array(mergedById.values)
+    }
+
+    private func shouldRetryRateLimitsWithEmptyParams(_ error: Error) -> Bool {
+        guard let serviceError = error as? CodeRoverServiceError,
+              case .rpcError(let rpcError) = serviceError else {
+            return false
+        }
+
+        guard rpcError.code == -32602 || rpcError.code == -32600 else {
+            return false
+        }
+
+        let lowered = rpcError.message.lowercased()
+        return lowered.contains("invalid params")
+            || lowered.contains("invalid param")
+            || lowered.contains("failed to parse")
+            || lowered.contains("expected")
+            || lowered.contains("missing field `params`")
+            || lowered.contains("missing field params")
     }
 }
 

@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.coderover.android.app.AppViewModel
 import com.coderover.android.data.model.AccessMode
 import com.coderover.android.data.model.AppState
+import com.coderover.android.data.model.CodeRoverReviewTarget
 import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,8 @@ internal fun TurnComposerHost(
     onInputChanged: (String) -> Unit,
     isRunning: Boolean,
     onSend: (String, List<ImageAttachment>, List<TurnSkillMention>, Boolean) -> Unit,
+    onStartReview: (String, CodeRoverReviewTarget, String?) -> Unit,
+    onShowStatus: () -> Unit,
     onStop: () -> Unit,
     onReconnect: () -> Unit,
     onSelectModel: (String?) -> Unit,
@@ -35,6 +38,9 @@ internal fun TurnComposerHost(
     turnViewModel: TurnViewModel,
     viewModel: AppViewModel,
 ) {
+    val isCodexThread = remember(state.selectedThread?.provider, state.selectedProviderId) {
+        (state.selectedThread?.provider ?: state.selectedProviderId).trim().lowercase() == "codex"
+    }
     val context = LocalContext.current
     val clipboardManager = remember(context) {
         context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -115,12 +121,25 @@ internal fun TurnComposerHost(
         }
     }
 
+    LaunchedEffect(state.selectedThreadId, state.isConnected, isCodexThread) {
+        if (!state.isConnected || !isCodexThread) return@LaunchedEffect
+        val threadId = state.selectedThreadId ?: return@LaunchedEffect
+        viewModel.refreshContextWindowUsage(threadId)
+    }
+
+    fun applyInputChange(value: String) {
+        turnViewModel.onInputChangedForSlashCommandAutocomplete(value, isEnabled = isCodexThread)
+        onInputChanged(value)
+    }
+
     TurnComposerView(
         state = state,
         input = input,
-        onInputChanged = onInputChanged,
+        onInputChanged = ::applyInputChange,
         isRunning = isRunning,
         onSend = onSend,
+        onStartReview = onStartReview,
+        onShowStatus = onShowStatus,
         onStop = onStop,
         onReconnect = onReconnect,
         onSelectModel = onSelectModel,
@@ -128,6 +147,7 @@ internal fun TurnComposerHost(
         onSelectAccessMode = onSelectAccessMode,
         viewModel = viewModel,
         turnViewModel = turnViewModel,
+        isCodexThread = isCodexThread,
         selectedModel = selectedModel,
         orderedModels = orderedModels,
         selectedModelTitle = selectedModelTitle,

@@ -7,6 +7,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.coderover.android.app.AppViewModel
 import com.coderover.android.data.model.AppState
+import com.coderover.android.data.model.CodeRoverReviewTarget
 import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
 import com.coderover.android.data.model.FuzzyFileMatch
@@ -20,6 +21,7 @@ data class TurnComposerPresentationState(
     val isQueuePaused: Boolean,
     val hasComposerContent: Boolean,
     val canSend: Boolean,
+    val hasPendingReviewSelection: Boolean,
 )
 
 data class TurnQueuePresentationState(
@@ -43,6 +45,45 @@ data class TurnComposerAttachmentIntakePlan(
         get() = droppedCount > 0
 }
 
+enum class TurnComposerSlashCommand {
+    CODE_REVIEW,
+    STATUS,
+}
+
+enum class TurnComposerReviewTarget {
+    UNCOMMITTED_CHANGES,
+    BASE_BRANCH,
+    ;
+
+    val title: String
+        get() = when (this) {
+            UNCOMMITTED_CHANGES -> "Uncommitted changes"
+            BASE_BRANCH -> "Base branch"
+        }
+
+    val serviceTarget: CodeRoverReviewTarget
+        get() = when (this) {
+            UNCOMMITTED_CHANGES -> CodeRoverReviewTarget.UNCOMMITTED_CHANGES
+            BASE_BRANCH -> CodeRoverReviewTarget.BASE_BRANCH
+        }
+}
+
+data class TurnComposerReviewSelection(
+    val command: TurnComposerSlashCommand,
+    val target: TurnComposerReviewTarget?,
+)
+
+sealed interface TurnComposerSlashCommandPanelState {
+    data object Hidden : TurnComposerSlashCommandPanelState
+    data class Commands(val query: String) : TurnComposerSlashCommandPanelState
+    data object CodeReviewTargets : TurnComposerSlashCommandPanelState
+}
+
+data class TurnTrailingSlashCommandToken(
+    val query: String,
+    val tokenRange: IntRange,
+)
+
 class TurnViewModel {
     var isPlanModeArmed by mutableStateOf(false)
     var plusMenuExpanded by mutableStateOf(false)
@@ -62,7 +103,20 @@ class TurnViewModel {
     var composerMentionedFiles by mutableStateOf<List<TurnComposerMentionedFile>>(emptyList())
     var composerMentionedSkills by mutableStateOf<List<TurnComposerMentionedSkill>>(emptyList())
     var composerAttachments by mutableStateOf<List<TurnComposerImageAttachment>>(emptyList())
+    var composerReviewSelection by mutableStateOf<TurnComposerReviewSelection?>(null)
+    var slashCommandPanelState by mutableStateOf<TurnComposerSlashCommandPanelState>(TurnComposerSlashCommandPanelState.Hidden)
     var visibleTailCount by mutableStateOf(40)
+
+    val hasConfirmedReviewSelection: Boolean
+        get() = composerReviewSelection?.target != null
+
+    val hasPendingReviewSelection: Boolean
+        get() = composerReviewSelection != null && composerReviewSelection?.target == null
+
+    val hasComposerContentConflictingWithReview: Boolean
+        get() = composerMentionedFiles.isNotEmpty() ||
+            composerMentionedSkills.isNotEmpty() ||
+            composerAttachments.isNotEmpty()
 
     val hasBlockingAttachmentState: Boolean
         get() = composerAttachments.any {
@@ -116,12 +170,14 @@ class TurnViewModel {
         val hasComposerContent = input.isNotBlank() ||
             composerMentionedFiles.isNotEmpty() ||
             composerMentionedSkills.isNotEmpty() ||
-            composerAttachments.isNotEmpty()
+            composerAttachments.isNotEmpty() ||
+            hasConfirmedReviewSelection
         return TurnComposerPresentationState(
             queuedDraftCount = queuedDraftCount,
             isQueuePaused = queuePauseMessage != null && queuedDraftCount > 0,
             hasComposerContent = hasComposerContent,
-            canSend = isConnected && !hasBlockingAttachmentState && hasComposerContent,
+            canSend = isConnected && !hasBlockingAttachmentState && hasComposerContent && !hasPendingReviewSelection,
+            hasPendingReviewSelection = hasPendingReviewSelection,
         )
     }
 
@@ -136,6 +192,10 @@ class TurnViewModel {
 
     fun togglePlanMode() {
         isPlanModeArmed = !isPlanModeArmed
+    }
+
+    fun disablePlanMode() {
+        isPlanModeArmed = false
     }
 
     fun requestAssistantResponseAnchor() {
@@ -176,6 +236,7 @@ class TurnViewModel {
         isScrolledToBottom = true
         composerNoticeMessage = null
         clearComposerSelections()
+        resetSlashCommandState(clearPendingSelection = true, clearConfirmedSelection = true)
     }
 
     fun loadEarlierMessages(totalMessages: Int) {
@@ -212,6 +273,7 @@ class TurnViewModel {
     }
 
     fun addMentionedFile(input: String, file: FuzzyFileMatch): String {
+        clearComposerReviewSelectionIfNeededForNonReviewContent()
         if (composerMentionedFiles.none { it.path == file.path }) {
             composerMentionedFiles = composerMentionedFiles + TurnComposerMentionedFile(
                 fileName = file.fileName,
@@ -222,6 +284,7 @@ class TurnViewModel {
     }
 
     fun addMentionedSkill(input: String, skill: SkillMetadata): String {
+        clearComposerReviewSelectionIfNeededForNonReviewContent()
         val normalizedName = skill.name.trim()
         if (normalizedName.isEmpty()) {
             clearAutocomplete()
@@ -278,9 +341,11 @@ class TurnViewModel {
         composerMentionedSkills = emptyList()
         composerAttachments = emptyList()
         composerNoticeMessage = null
+        resetSlashCommandState(clearPendingSelection = true, clearConfirmedSelection = true)
     }
 
     fun addComposerAttachment(sourceData: ByteArray): Boolean {
+        clearComposerReviewSelectionIfNeededForNonReviewContent()
         if (remainingAttachmentSlots <= 0) {
             return false
         }
@@ -302,6 +367,9 @@ class TurnViewModel {
     }
 
     fun prepareAttachmentIntake(requestedCount: Int): TurnComposerAttachmentIntakePlan {
+        if (requestedCount > 0) {
+            clearComposerReviewSelectionIfNeededForNonReviewContent()
+        }
         val acceptedCount = requestedCount.coerceAtMost(remainingAttachmentSlots)
         val droppedCount = (requestedCount - acceptedCount).coerceAtLeast(0)
         composerNoticeMessage = when {
@@ -401,6 +469,128 @@ class TurnViewModel {
 
             else -> clearAutocomplete()
         }
+    }
+
+    fun onInputChangedForSlashCommandAutocomplete(input: String, isEnabled: Boolean) {
+        if (!isEnabled) {
+            disablePlanMode()
+            resetSlashCommandState(clearPendingSelection = true, clearConfirmedSelection = true)
+            return
+        }
+
+        clearComposerReviewSelectionIfNeededForInput(input)
+
+        if (slashCommandPanelState is TurnComposerSlashCommandPanelState.CodeReviewTargets) {
+            return
+        }
+
+        val token = trailingSlashCommandToken(input)
+        slashCommandPanelState = if (token == null) {
+            TurnComposerSlashCommandPanelState.Hidden
+        } else {
+            clearAutocomplete()
+            TurnComposerSlashCommandPanelState.Commands(token.query)
+        }
+    }
+
+    fun onSelectSlashCommand(input: String, command: TurnComposerSlashCommand): String {
+        val updatedInput = removingTrailingSlashCommandToken(input) ?: input
+        when (command) {
+            TurnComposerSlashCommand.CODE_REVIEW -> {
+                if (hasComposerContentConflictingWithReview) {
+                    resetSlashCommandState(clearPendingSelection = true)
+                    return updatedInput
+                }
+                composerReviewSelection = TurnComposerReviewSelection(
+                    command = command,
+                    target = null,
+                )
+                slashCommandPanelState = TurnComposerSlashCommandPanelState.CodeReviewTargets
+            }
+
+            TurnComposerSlashCommand.STATUS -> {
+                resetSlashCommandState(clearPendingSelection = true)
+            }
+        }
+        return updatedInput.trim()
+    }
+
+    fun onSelectCodeReviewTarget(input: String, target: TurnComposerReviewTarget): String {
+        val updatedInput = removingTrailingSlashCommandToken(input) ?: input
+        if (inputHasConflictingContentForReview(updatedInput) ||
+            composerMentionedFiles.isNotEmpty() ||
+            composerMentionedSkills.isNotEmpty() ||
+            composerAttachments.isNotEmpty()
+        ) {
+            resetSlashCommandState(clearPendingSelection = true)
+            return updatedInput
+        }
+        composerReviewSelection = TurnComposerReviewSelection(
+            command = TurnComposerSlashCommand.CODE_REVIEW,
+            target = target,
+        )
+        slashCommandPanelState = TurnComposerSlashCommandPanelState.Hidden
+        return updatedInput.trim()
+    }
+
+    fun clearComposerReviewSelection() {
+        composerReviewSelection = null
+        resetSlashCommandState()
+    }
+
+    fun reviewBaseBranchName(state: AppState): String? {
+        return state.selectedGitBaseBranch?.trim()?.takeIf(String::isNotEmpty)
+    }
+
+    private fun resetSlashCommandState(
+        clearPendingSelection: Boolean = false,
+        clearConfirmedSelection: Boolean = false,
+    ) {
+        slashCommandPanelState = TurnComposerSlashCommandPanelState.Hidden
+        if (clearConfirmedSelection) {
+            composerReviewSelection = null
+            return
+        }
+        if (clearPendingSelection && composerReviewSelection?.target == null) {
+            composerReviewSelection = null
+        }
+    }
+
+    private fun clearComposerReviewSelectionIfNeededForInput(input: String) {
+        if (composerReviewSelection?.target != null && inputHasConflictingContentForReview(input)) {
+            clearComposerReviewSelection()
+        }
+    }
+
+    private fun clearComposerReviewSelectionIfNeededForNonReviewContent() {
+        if (composerReviewSelection?.target != null) {
+            clearComposerReviewSelection()
+        }
+    }
+
+    private fun inputHasConflictingContentForReview(input: String): Boolean {
+        val draftText = (removingTrailingSlashCommandToken(input) ?: input).trim()
+        return draftText.isNotEmpty()
+    }
+
+    private fun trailingSlashCommandToken(input: String): TurnTrailingSlashCommandToken? {
+        if (input.isEmpty()) return null
+        val slashIndex = input.lastIndexOf('/')
+        if (slashIndex < 0) return null
+        if (slashIndex > 0 && !input[slashIndex - 1].isWhitespace()) return null
+        val query = input.substring(slashIndex + 1)
+        if (query.any(Char::isWhitespace)) return null
+        return TurnTrailingSlashCommandToken(query = query, tokenRange = slashIndex..input.lastIndex)
+    }
+
+    private fun removingTrailingSlashCommandToken(input: String): String? {
+        val token = trailingSlashCommandToken(input) ?: return null
+        return buildString {
+            append(input.substring(0, token.tokenRange.first))
+            if (token.tokenRange.last < input.lastIndex) {
+                append(input.substring(token.tokenRange.last + 1))
+            }
+        }.trim()
     }
 }
 

@@ -532,6 +532,9 @@ data class AppState(
     val gitBranchTargetsByThread: Map<String, GitBranchTargets> = emptyMap(),
     val selectedGitBaseBranchByThread: Map<String, String> = emptyMap(),
     val contextWindowUsageByThread: Map<String, ContextWindowUsage> = emptyMap(),
+    val rateLimitBuckets: List<CodeRoverRateLimitBucket> = emptyList(),
+    val isLoadingRateLimits: Boolean = false,
+    val rateLimitsErrorMessage: String? = null,
     val collapsedProjectGroupIds: Set<String> = emptySet(),
     val assistantRevertPresentationByMessageId: Map<String, AssistantRevertPresentation> = emptyMap(),
     val queuedTurnDraftsByThread: Map<String, List<QueuedTurnDraft>> = emptyMap(),
@@ -721,6 +724,85 @@ data class ContextWindowUsage(
                 }
             }
             else -> count.toString()
+        }
+    }
+}
+
+enum class CodeRoverReviewTarget {
+    UNCOMMITTED_CHANGES,
+    BASE_BRANCH,
+}
+
+data class CodeRoverRateLimitWindow(
+    val usedPercent: Int,
+    val windowDurationMins: Int?,
+    val resetsAtMillis: Long?,
+) {
+    val clampedUsedPercent: Int
+        get() = usedPercent.coerceIn(0, 100)
+
+    val remainingPercent: Int
+        get() = (100 - clampedUsedPercent).coerceAtLeast(0)
+}
+
+data class CodeRoverRateLimitDisplayRow(
+    val id: String,
+    val label: String,
+    val window: CodeRoverRateLimitWindow,
+)
+
+data class CodeRoverRateLimitBucket(
+    val limitId: String,
+    val limitName: String?,
+    val primary: CodeRoverRateLimitWindow?,
+    val secondary: CodeRoverRateLimitWindow?,
+) {
+    val primaryOrSecondary: CodeRoverRateLimitWindow?
+        get() = primary ?: secondary
+
+    val displayRows: List<CodeRoverRateLimitDisplayRow>
+        get() {
+            val rows = mutableListOf<CodeRoverRateLimitDisplayRow>()
+            primary?.let { window ->
+                rows += CodeRoverRateLimitDisplayRow(
+                    id = "$limitId-primary",
+                    label = labelFor(window, limitName ?: limitId),
+                    window = window,
+                )
+            }
+            secondary?.let { window ->
+                rows += CodeRoverRateLimitDisplayRow(
+                    id = "$limitId-secondary",
+                    label = labelFor(window, limitName ?: limitId),
+                    window = window,
+                )
+            }
+            return rows
+        }
+
+    val sortDurationMins: Int
+        get() = primaryOrSecondary?.windowDurationMins ?: Int.MAX_VALUE
+
+    val displayLabel: String
+        get() {
+            durationLabel(primaryOrSecondary?.windowDurationMins)?.let { return it }
+            val trimmedName = limitName?.trim()
+            return if (trimmedName.isNullOrEmpty()) limitId else trimmedName
+        }
+
+    private fun labelFor(window: CodeRoverRateLimitWindow, fallback: String): String {
+        return durationLabel(window.windowDurationMins) ?: fallback
+    }
+
+    private fun durationLabel(minutes: Int?): String? {
+        val value = minutes?.takeIf { it > 0 } ?: return null
+        val weekMinutes = 7 * 24 * 60
+        val dayMinutes = 24 * 60
+        return when {
+            value % weekMinutes == 0 -> if (value == weekMinutes) "Weekly" else "${value / weekMinutes}w"
+            value % dayMinutes == 0 -> "${value / dayMinutes}d"
+            value % 60 == 0 -> "${value / 60}h"
+            else -> "${value}m"
         }
     }
 }

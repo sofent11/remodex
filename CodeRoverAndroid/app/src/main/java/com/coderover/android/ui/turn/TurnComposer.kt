@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import com.coderover.android.app.AppViewModel
 import com.coderover.android.data.model.AccessMode
 import com.coderover.android.data.model.AppState
+import com.coderover.android.data.model.CodeRoverReviewTarget
 import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
 
@@ -14,6 +15,8 @@ fun TurnComposer(
     onInputChanged: (String) -> Unit,
     isRunning: Boolean,
     onSend: (String, List<ImageAttachment>, List<TurnSkillMention>, Boolean) -> Unit,
+    onStartReview: (String, CodeRoverReviewTarget, String?) -> Unit,
+    onShowStatus: () -> Unit,
     onStop: () -> Unit,
     onReconnect: () -> Unit,
     onSelectModel: (String?) -> Unit,
@@ -28,6 +31,8 @@ fun TurnComposer(
         onInputChanged = onInputChanged,
         isRunning = isRunning,
         onSend = onSend,
+        onStartReview = onStartReview,
+        onShowStatus = onShowStatus,
         onStop = onStop,
         onReconnect = onReconnect,
         onSelectModel = onSelectModel,

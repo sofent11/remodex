@@ -313,9 +313,14 @@ extension CodeRoverService {
             ?? threadObject["contextWindow"]?.objectValue
             ?? threadObject["context_window"]?.objectValue
 
+        guard let usage = extractContextWindowUsage(from: usageObject) else { return }
+        contextWindowUsageByThread[threadId] = usage
+    }
+
+    func extractContextWindowUsage(from usageObject: [String: JSONValue]?) -> ContextWindowUsage? {
         let tokensUsed = firstIntValue(
             in: usageObject,
-            keys: ["tokensUsed", "tokens_used", "totalTokens", "total_tokens"]
+            keys: ["tokensUsed", "tokens_used", "totalTokens", "total_tokens", "input_tokens"]
         ) ?? 0
 
         let tokenLimit = firstIntValue(
@@ -323,9 +328,9 @@ extension CodeRoverService {
             keys: ["tokenLimit", "token_limit", "maxTokens", "max_tokens", "contextWindow", "context_window"]
         ) ?? 0
 
-        guard tokenLimit > 0 else { return }
+        guard tokenLimit > 0 else { return nil }
 
-        contextWindowUsageByThread[threadId] = ContextWindowUsage(
+        return ContextWindowUsage(
             tokensUsed: tokensUsed,
             tokenLimit: tokenLimit
         )
