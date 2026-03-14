@@ -50,8 +50,8 @@ function createRuntimeManager({
 
   const codexAdapter = providedCodexAdapter || createCodexAdapter({
     logPrefix,
-    sendToClient(rawMessage) {
-      sendApplicationMessage(rawMessage);
+    sendToClient(rawMessage, parsedMessage) {
+      sendApplicationMessage(decorateCodexTransportMessage(rawMessage, parsedMessage));
     },
   });
 
@@ -375,6 +375,41 @@ function createRuntimeManager({
 
   function shutdown() {
     store.shutdown();
+  }
+
+  function decorateCodexTransportMessage(rawMessage, parsedMessage) {
+    const method = normalizeOptionalString(parsedMessage?.method);
+    const params = asObject(parsedMessage?.params);
+    if (!method || !params) {
+      return rawMessage;
+    }
+
+    const itemId = extractNotificationItemId(params);
+    if (!itemId || params.previousItemId || params.previous_item_id) {
+      return rawMessage;
+    }
+
+    if (!shouldDecorateNotificationWithPreviousItemId(method)) {
+      return rawMessage;
+    }
+
+    const threadId = extractNotificationThreadId(params);
+    if (!threadId) {
+      return rawMessage;
+    }
+
+    const previousItemId = previousCodexHistoryItemId(threadId, itemId);
+    if (!previousItemId) {
+      return rawMessage;
+    }
+
+    return JSON.stringify({
+      ...parsedMessage,
+      params: {
+        ...params,
+        previousItemId,
+      },
+    });
   }
 
   async function handleClientResponse(rawMessage, parsed) {
@@ -953,6 +988,70 @@ function createRuntimeManager({
       }
       writeCodexHistoryCache(threadId, entry);
     }
+  }
+
+  function shouldDecorateNotificationWithPreviousItemId(method) {
+    return method === "item/agentMessage/delta"
+      || method === "item/reasoning/textDelta"
+      || method === "item/reasoning/summaryTextDelta"
+      || method === "item/toolCall/outputDelta"
+      || method === "item/toolCall/completed"
+      || method === "item/commandExecution/outputDelta"
+      || method === "turn/plan/updated"
+      || method === "item/completed";
+  }
+
+  function extractNotificationThreadId(params) {
+    return normalizeOptionalString(
+      params.threadId
+      || params.thread_id
+      || params.conversationId
+      || asObject(params.thread)?.id
+      || asObject(params.item)?.threadId
+      || asObject(params.item)?.thread_id
+    );
+  }
+
+  function extractNotificationItemId(params) {
+    return normalizeOptionalString(
+      params.itemId
+      || params.item_id
+      || params.id
+      || asObject(params.item)?.id
+      || params.callId
+      || params.call_id
+    );
+  }
+
+  function previousCodexHistoryItemId(threadId, itemId) {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    const normalizedItemId = normalizeOptionalString(itemId);
+    if (!normalizedThreadId || !normalizedItemId) {
+      return null;
+    }
+
+    const entry = codexHistoryCache.get(normalizedThreadId);
+    if (!entry || !Array.isArray(entry.records) || entry.records.length === 0) {
+      return null;
+    }
+
+    const orderedItemIds = entry.records
+      .slice()
+      .sort((left, right) => (left.ordinal || 0) - (right.ordinal || 0))
+      .map((record) => normalizeOptionalString(record?.itemObject?.id))
+      .filter(Boolean);
+    if (orderedItemIds.length === 0) {
+      return null;
+    }
+
+    const existingIndex = orderedItemIds.lastIndexOf(normalizedItemId);
+    if (existingIndex > 0) {
+      return orderedItemIds[existingIndex - 1];
+    }
+    if (existingIndex === -1) {
+      return orderedItemIds[orderedItemIds.length - 1] || null;
+    }
+    return null;
   }
 
   function ensureHistoryTurn(entry, turnId, turnMeta) {

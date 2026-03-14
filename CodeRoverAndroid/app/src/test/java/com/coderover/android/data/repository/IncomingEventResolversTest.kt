@@ -55,6 +55,25 @@ class IncomingEventResolversTest {
     }
 
     @Test
+    fun resolvePreviousItemIdReadsEnvelopeAndNestedItemShapes() {
+        val payload = JsonObject(
+            mapOf(
+                "msg" to JsonObject(
+                    mapOf(
+                        "item" to JsonObject(
+                            mapOf(
+                                "previous_item_id" to JsonPrimitive("item-8"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals("item-8", payload.resolvePreviousItemId())
+    }
+
+    @Test
     fun resolveThreadIdReturnsNullWhenNoSupportedShapeExists() {
         val payload = JsonObject(
             mapOf(

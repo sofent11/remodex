@@ -47,6 +47,14 @@ extension CodeRoverService {
             itemId: context.identity.itemId,
             delta: delta
         )
+        scheduleRealtimeHistoryCatchUp(
+            threadId: context.threadId,
+            itemId: context.identity.itemId,
+            previousItemId: extractPreviousItemID(
+                from: paramsObject,
+                eventObject: eventObject
+            )
+        )
     }
 
     // Finalizes assistant text when item completion carries canonical content.
@@ -73,6 +81,14 @@ extension CodeRoverService {
                 turnId: context.identity.turnId,
                 itemId: context.identity.itemId,
                 text: text
+            )
+            scheduleRealtimeHistoryCatchUp(
+                threadId: context.threadId,
+                itemId: context.identity.itemId,
+                previousItemId: extractPreviousItemID(
+                    from: paramsObject,
+                    eventObject: eventObject
+                )
             )
             return
         }
@@ -107,6 +123,15 @@ extension CodeRoverService {
             turnId: context.identity.turnId,
             itemId: context.identity.itemId,
             text: text
+        )
+        scheduleRealtimeHistoryCatchUp(
+            threadId: context.threadId,
+            itemId: context.identity.itemId,
+            previousItemId: extractPreviousItemID(
+                from: paramsObject,
+                eventObject: eventObject,
+                itemObject: itemObject
+            )
         )
     }
 

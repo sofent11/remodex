@@ -17,18 +17,19 @@ function createManagerFixture() {
 
 function createManagerFixtureWithOptions({
   codexAdapter: providedCodexAdapter = null,
+  useDefaultCodexAdapter = false,
 } = {}) {
   const messages = [];
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-manager-"));
   const noopAsync = async () => {};
-  const codexAdapter = providedCodexAdapter || {
+  const codexAdapter = providedCodexAdapter || (useDefaultCodexAdapter ? null : {
     attachTransport() {},
     handleIncomingRaw() {},
     handleTransportClosed() {},
     isAvailable() {
       return false;
     },
-  };
+  });
   const claudeAdapter = {
     syncImportedThreads: noopAsync,
     hydrateThread: noopAsync,
@@ -333,6 +334,63 @@ test("thread/read history tail and after windows reuse the Codex cache", async (
     assert.equal(afterResponse.result.historyWindow.servedFromCache, true);
     assert.equal(afterResponse.result.thread.turns[0].items.length, 5);
     assert.equal(afterResponse.result.thread.turns[0].items[0].id, "item-151");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("forwarded Codex item delta notifications include previousItemId when cache context exists", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const thread = buildCodexThread({ messageCount: 0 });
+    fixture.manager.attachCodexTransport({ send() {} });
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "thread/started",
+      params: {
+        thread,
+      },
+    }));
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-1",
+      },
+    }));
+    for (let index = 1; index <= 3; index += 1) {
+      fixture.manager.handleCodexTransportMessage(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: thread.id,
+          turnId: "turn-1",
+          itemId: `item-${index}`,
+          delta: `message-${index}`,
+        },
+      }));
+    }
+
+    const beforeCount = fixture.messages.length;
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-1",
+        itemId: "item-4",
+        delta: "message-4",
+      },
+    }));
+
+    const forwarded = fixture.messages[beforeCount];
+    assert.ok(forwarded);
+    assert.equal(forwarded.method, "item/agentMessage/delta");
+    assert.equal(forwarded.params.previousItemId, "item-3");
   } finally {
     fixture.cleanup();
   }

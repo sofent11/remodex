@@ -286,6 +286,88 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-202")
     }
 
+    func testIncomingDeltaSchedulesAfterCatchUpWhenTailHasGap() async throws {
+        let service = makeService()
+        let threadID = "thread-event-after-gap"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = "turn-0"
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1...1)
+
+        let afterExpectation = expectation(description: "after history request")
+        service.requestTransportOverride = { method, params in
+            XCTAssertEqual(method, "thread/read")
+            let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+            XCTAssertEqual(historyObject["mode"]?.stringValue, "after")
+            XCTAssertEqual(historyObject["anchor"]?.objectValue?["itemId"]?.stringValue, "item-1")
+            afterExpectation.fulfill()
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "After",
+                        messageRange: 2...3
+                    ),
+                    "historyWindow": .object([
+                        "oldestAnchor": self.makeAnchorObject(index: 2),
+                        "newestAnchor": self.makeAnchorObject(index: 3),
+                        "hasOlder": .bool(false),
+                        "hasNewer": .bool(false),
+                    ]),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        service.handleNotification(
+            method: "item/agentMessage/delta",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string("turn-0"),
+                "itemId": .string("item-3"),
+                "delta": .string("partial-3"),
+            ])
+        )
+
+        await fulfillment(of: [afterExpectation], timeout: 1.0)
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2", "item-3"])
+    }
+
+    func testIncomingDeltaSkipsAfterCatchUpWhenPreviousItemMatchesTail() async throws {
+        let service = makeService()
+        let threadID = "thread-event-direct-tail"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = "turn-1"
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1...10)
+
+        service.requestTransportOverride = { method, _ in
+            XCTFail("Did not expect realtime catch-up request for \(method)")
+            return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+        }
+
+        service.handleNotification(
+            method: "item/agentMessage/delta",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string("turn-1"),
+                "itemId": .string("item-11"),
+                "previousItemId": .string("item-10"),
+                "delta": .string("partial-11"),
+            ])
+        )
+
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-11")
+    }
+
     private func makeService() -> CodeRoverService {
         let suiteName = "ThreadHistoryStateTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard

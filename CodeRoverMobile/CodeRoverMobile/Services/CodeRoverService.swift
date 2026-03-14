@@ -364,6 +364,8 @@ final class CodeRoverService {
     var hydratedThreadIDs: Set<String> = []
     var loadingThreadIDs: Set<String> = []
     var resumedThreadIDs: Set<String> = []
+    var pendingRealtimeHistoryCatchUpThreadIDs: Set<String> = []
+    var realtimeHistoryCatchUpTaskByThread: [String: Task<Void, Never>] = [:]
     var isAppInForeground = true
     var threadListSyncTask: Task<Void, Never>?
     var activeThreadSyncTask: Task<Void, Never>?

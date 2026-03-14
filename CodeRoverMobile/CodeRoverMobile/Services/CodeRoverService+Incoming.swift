@@ -700,6 +700,11 @@ extension CodeRoverService {
                 kind: .thinking,
                 delta: delta
             )
+            scheduleRealtimeHistoryCatchUp(
+                threadId: threadId,
+                itemId: itemId,
+                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
+            )
             return
         }
 
@@ -746,6 +751,11 @@ extension CodeRoverService {
                 itemId: itemId,
                 kind: .fileChange,
                 delta: delta
+            )
+            scheduleRealtimeHistoryCatchUp(
+                threadId: threadId,
+                itemId: itemId,
+                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
             )
             return
         }
@@ -805,6 +815,11 @@ extension CodeRoverService {
                 kind: .fileChange,
                 delta: delta
             )
+            scheduleRealtimeHistoryCatchUp(
+                threadId: threadId,
+                itemId: itemId,
+                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
+            )
             return
         }
 
@@ -858,6 +873,11 @@ extension CodeRoverService {
             statusText: statusText,
             isStreaming: true
         )
+        scheduleRealtimeHistoryCatchUp(
+            threadId: context.threadId,
+            itemId: context.itemId,
+            previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
+        )
     }
 
     private func handleCommandExecutionTerminalInteraction(from paramsObject: IncomingParamsObject?) {
@@ -903,6 +923,11 @@ extension CodeRoverService {
             context: context,
             statusText: statusText,
             isStreaming: state.phase == .running
+        )
+        scheduleRealtimeHistoryCatchUp(
+            threadId: context.threadId,
+            itemId: context.itemId,
+            previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
         )
     }
 
@@ -1733,6 +1758,11 @@ extension CodeRoverService {
                     isStreaming: true
                 )
             }
+            scheduleRealtimeHistoryCatchUp(
+                threadId: threadId,
+                itemId: itemId,
+                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
+            )
             return true
         }
 
@@ -1832,6 +1862,39 @@ extension CodeRoverService {
         if let itemId = eventObject?["call_id"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = eventObject?["callId"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = eventObject?["item"]?.objectValue?["id"]?.stringValue, !itemId.isEmpty { return itemId }
+        return nil
+    }
+
+    func extractPreviousItemID(
+        from paramsObject: IncomingParamsObject?,
+        eventObject: IncomingParamsObject?,
+        itemObject: IncomingParamsObject? = nil
+    ) -> String? {
+        let candidates: [String?] = [
+            itemObject?["previousItemId"]?.stringValue,
+            itemObject?["previous_item_id"]?.stringValue,
+            itemObject?["previousItemID"]?.stringValue,
+            paramsObject?["previousItemId"]?.stringValue,
+            paramsObject?["previous_item_id"]?.stringValue,
+            paramsObject?["previousItemID"]?.stringValue,
+            paramsObject?["previousItem"]?.objectValue?["id"]?.stringValue,
+            paramsObject?["previous_item"]?.objectValue?["id"]?.stringValue,
+            eventObject?["previousItemId"]?.stringValue,
+            eventObject?["previous_item_id"]?.stringValue,
+            eventObject?["previousItemID"]?.stringValue,
+            eventObject?["previousItem"]?.objectValue?["id"]?.stringValue,
+            eventObject?["previous_item"]?.objectValue?["id"]?.stringValue,
+            paramsObject?["item"]?.objectValue?["previousItemId"]?.stringValue,
+            paramsObject?["item"]?.objectValue?["previous_item_id"]?.stringValue,
+            eventObject?["item"]?.objectValue?["previousItemId"]?.stringValue,
+            eventObject?["item"]?.objectValue?["previous_item_id"]?.stringValue,
+        ]
+
+        for candidate in candidates {
+            if let normalized = normalizedIdentifier(candidate) {
+                return normalized
+            }
+        }
         return nil
     }
 

@@ -10,6 +10,7 @@ import com.coderover.android.data.model.ThreadSyncState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class ThreadSummaryRefreshTest {
@@ -113,6 +114,31 @@ class ThreadSummaryRefreshTest {
             connectedState.copy(
                 threads = listOf(runningCodexThread.copy(provider = "claude")),
             ).selectedCodexThreadIdForTailSync(),
+        )
+    }
+
+    @Test
+    fun shouldRequestRealtimeHistoryCatchUpSkipsNoGapAndSameTailItem() {
+        assertFalse(
+            shouldRequestRealtimeHistoryCatchUp(
+                latestItemId = "item-10",
+                incomingItemId = "item-10",
+                previousItemId = null,
+            ),
+        )
+        assertFalse(
+            shouldRequestRealtimeHistoryCatchUp(
+                latestItemId = "item-10",
+                incomingItemId = "item-11",
+                previousItemId = "item-10",
+            ),
+        )
+        assertTrue(
+            shouldRequestRealtimeHistoryCatchUp(
+                latestItemId = "item-10",
+                incomingItemId = "item-42",
+                previousItemId = "item-12",
+            ),
         )
     }
 }
