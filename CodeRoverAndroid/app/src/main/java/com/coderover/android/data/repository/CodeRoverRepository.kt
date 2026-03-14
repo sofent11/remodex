@@ -1511,18 +1511,9 @@ class CodeRoverRepository(context: Context) {
             .firstOrNull { turn ->
                 turn.bool("isRunning") == true ||
                     turn.bool("isActive") == true ||
-                    turn.bool("completed") == false ||
-                    turn.string("status")?.lowercase() in setOf("inprogress", "running", "active", "started", "pending") ||
-                    (
-                        turn.string("id") != null &&
-                            turn["completedAt"] == null &&
-                            turn["completed_at"] == null &&
-                            turn["endedAt"] == null &&
-                            turn["ended_at"] == null
-                        )
+                    turn.string("status")?.lowercase() in setOf("inprogress", "running", "active", "started", "pending")
             }
         return activeTurn?.string("id")
-            ?: turns.lastOrNull()?.jsonObjectOrNull()?.string("id")
     }
 
     private suspend fun requestWithSandboxFallback(method: String, baseParams: JsonObject): JsonElement? {

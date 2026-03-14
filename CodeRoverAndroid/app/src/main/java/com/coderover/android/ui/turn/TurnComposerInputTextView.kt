@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -43,7 +44,9 @@ internal fun TurnComposerInputTextView(
                 text = "Ask for follow-up changes",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                modifier = Modifier.padding(vertical = 8.dp),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(vertical = 8.dp),
             )
         }
         AndroidView(
@@ -75,7 +78,7 @@ internal fun TurnComposerInputTextView(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 0.dp),
+                .heightIn(min = 32.dp, max = 220.dp),
         )
     }
 }

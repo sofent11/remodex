@@ -173,7 +173,7 @@ internal fun ComposerPrimaryToolbar(
         Box {
             ComposerMetaButton(
                 title = selectedModelTitle,
-                enabled = orderedModels.isNotEmpty() && !isRunning,
+                enabled = true,
                 onClick = { turnViewModel.modelMenuExpanded = true },
             )
             DropdownMenu(
@@ -208,7 +208,7 @@ internal fun ComposerPrimaryToolbar(
         Box {
             ComposerMetaButton(
                 title = selectedReasoningTitle,
-                enabled = reasoningOptions.isNotEmpty() && !isRunning,
+                enabled = true,
                 onClick = { turnViewModel.reasoningMenuExpanded = true },
             )
             DropdownMenu(

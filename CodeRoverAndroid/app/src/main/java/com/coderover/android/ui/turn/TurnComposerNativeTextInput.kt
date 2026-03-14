@@ -23,6 +23,11 @@ internal fun TurnComposerPasteInterceptingEditText.applyComposerConfiguration(
 ) {
     background = null
     setTextColor(textColor)
+    isFocusable = true
+    isFocusableInTouchMode = true
+    isClickable = true
+    isLongClickable = true
+    isCursorVisible = true
     gravity = Gravity.TOP or Gravity.START
     textSize = 16f
     setPadding(0, 16, 0, 16)
@@ -64,7 +69,8 @@ internal class TurnComposerPasteInterceptingEditText(
     private var lastReportedFocus: Boolean? = null
 
     fun configureHeightBounds() {
-        val lineHeightPx = lineHeight.takeIf { it > 0 } ?: return
+        val fallbackLineHeightPx = (textSize * 1.35f).toInt().coerceAtLeast(1)
+        val lineHeightPx = lineHeight.takeIf { it > 0 } ?: fallbackLineHeightPx
         val minHeightPx = lineHeightPx + paddingTop + paddingBottom
         val maxHeightPx = lineHeightPx * 6 + paddingTop + paddingBottom
         minHeight = minHeightPx
@@ -78,7 +84,8 @@ internal class TurnComposerPasteInterceptingEditText(
     }
 
     fun updateScrollMode() {
-        val lineHeightPx = lineHeight.takeIf { it > 0 } ?: return
+        val fallbackLineHeightPx = (textSize * 1.35f).toInt().coerceAtLeast(1)
+        val lineHeightPx = lineHeight.takeIf { it > 0 } ?: fallbackLineHeightPx
         val maxHeightPx = lineHeightPx * 6 + paddingTop + paddingBottom
         post {
             val contentHeight = layout?.height?.plus(paddingTop + paddingBottom) ?: measuredHeight
