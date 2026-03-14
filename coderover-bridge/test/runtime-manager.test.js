@@ -592,6 +592,125 @@ test("Codex delta notifications without threadId still advance cache windows via
   }
 });
 
+test("forwarded Codex item delta notifications backfill thread and turn identity from cache", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const thread = buildCodexThread({ messageCount: 0 });
+    fixture.manager.attachCodexTransport({ send() {} });
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "thread/started",
+      params: {
+        thread,
+      },
+    }));
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-identity",
+      },
+    }));
+
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-identity",
+        itemId: "item-identity",
+        delta: "hello",
+      },
+    }));
+
+    const beforeCount = fixture.messages.length;
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/agentMessage/delta",
+      params: {
+        itemId: "item-identity",
+        delta: " world",
+      },
+    }));
+
+    const forwarded = fixture.messages[beforeCount];
+    assert.ok(forwarded);
+    assert.equal(forwarded.method, "item/agentMessage/delta");
+    assert.equal(forwarded.params.threadId, thread.id);
+    assert.equal(forwarded.params.turnId, "turn-identity");
+    assert.equal(forwarded.params.itemId, "item-identity");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("unscoped Codex history events invalidate cache so reopen fetches upstream", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const threadRef = {
+      current: buildCodexThread({
+        threadId: "codex-unscoped-history-thread",
+        messageCount: 3,
+        turnId: "turn-unscoped",
+      }),
+    };
+    const transportFixture = createDefaultCodexTransportFixture(fixture.manager, { threadRef });
+    fixture.manager.attachCodexTransport(transportFixture.transport);
+
+    const tailMessages = await request(fixture, "unscoped-tail", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 3,
+      },
+    });
+    const tailResponse = responseById(tailMessages, "unscoped-tail");
+    assert.ok(tailResponse);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+
+    const nextThread = buildCodexThread({
+      threadId: threadRef.current.id,
+      messageCount: 4,
+      turnId: "turn-unscoped",
+    });
+    threadRef.current = nextThread;
+
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/agentMessage/delta",
+      params: {
+        itemId: "item-4",
+        delta: "message-4",
+      },
+    }));
+
+    const afterMessages = await request(fixture, "unscoped-after", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "after",
+        limit: 3,
+        cursor: tailResponse.result.historyWindow.newerCursor,
+      },
+    });
+    const afterResponse = responseById(afterMessages, "unscoped-after");
+    assert.ok(afterResponse);
+    assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
+    assert.deepEqual(
+      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      ["item-4"]
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("thread/read history before window falls back to upstream when the cache boundary has a gap", async () => {
   const thread = buildCodexThread();
   const codexFixture = createCodexAdapterFixture({ threads: [thread] });

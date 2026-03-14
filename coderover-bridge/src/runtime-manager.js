@@ -960,6 +960,9 @@ function createRuntimeManager({
 
     const threadId = extractCodexNotificationThreadId(params);
     if (!threadId) {
+      if (shouldInvalidateCodexHistoryCacheForMethod(method)) {
+        codexHistoryCache.clear();
+      }
       return;
     }
     const entry = touchCodexHistoryCache(threadId);
@@ -1475,6 +1478,18 @@ function createRuntimeManager({
 
     let didChange = false;
     const nextParams = { ...params };
+    if (metadata.threadId && nextParams.threadId == null && nextParams.thread_id == null) {
+      nextParams.threadId = metadata.threadId;
+      didChange = true;
+    }
+    if (metadata.turnId && nextParams.turnId == null && nextParams.turn_id == null) {
+      nextParams.turnId = metadata.turnId;
+      didChange = true;
+    }
+    if (metadata.itemId && nextParams.itemId == null && nextParams.item_id == null) {
+      nextParams.itemId = metadata.itemId;
+      didChange = true;
+    }
     if (metadata.currentCursor && nextParams.cursor == null) {
       nextParams.cursor = metadata.currentCursor;
       didChange = true;
@@ -1508,6 +1523,11 @@ function createRuntimeManager({
     const currentRecord = records[currentIndex];
     const previousRecord = currentIndex > 0 ? records[currentIndex - 1] : null;
     return {
+      threadId: normalizedThreadId,
+      turnId: normalizeOptionalString(currentRecord?.turnId)
+        || normalizeOptionalString(currentRecord?.turnMeta?.id)
+        || null,
+      itemId: normalizeOptionalString(currentRecord?.itemObject?.id) || null,
       currentCursor: historyCursorForRecord(normalizedThreadId, currentRecord),
       previousCursor: previousRecord
         ? historyCursorForRecord(normalizedThreadId, previousRecord)
