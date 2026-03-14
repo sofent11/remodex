@@ -13,9 +13,11 @@ import Darwin
 
 private let coderoverDiagnosticLogsEnabled: Bool = {
 #if DEBUG
-    let envValue = ProcessInfo.processInfo.environment["CODEROVER_DEBUG_LOGS"]
-        ?.trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased()
+    let envValue = (
+        ProcessInfo.processInfo.environment["CODEROVER_DEBUG_LOGS"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    )
     if let envValue, ["1", "true", "yes", "on"].contains(envValue) {
         return true
     }

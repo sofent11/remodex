@@ -415,7 +415,8 @@ struct TurnView: View {
                 await reconnectCoordinator.stopAutoReconnectForManualScan(coderover: coderover)
                 try await reconnectCoordinator.connectUsingSavedPairing(
                     coderover: coderover,
-                    performAutoRetry: true
+                    performAutoRetry: true,
+                    preferredThreadId: thread.id
                 )
             } catch {
                 if coderover.lastErrorMessage?.isEmpty ?? true {

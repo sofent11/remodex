@@ -14,7 +14,8 @@ extension CodeRoverService {
         serverURL: String,
         token: String,
         role: String? = nil,
-        performInitialSync: Bool = true
+        performInitialSync: Bool = true,
+        preferredThreadId: String? = nil
     ) async throws {
         guard !isConnecting else {
             lastErrorMessage = "Connection already in progress"
@@ -68,7 +69,7 @@ extension CodeRoverService {
 
             startSyncLoop()
             if performInitialSync {
-                schedulePostConnectSyncPass()
+                schedulePostConnectSyncPass(preferredThreadId: preferredThreadId ?? activeThreadId)
             }
         } catch {
             presentConnectionErrorIfNeeded(error)
@@ -262,16 +263,7 @@ extension CodeRoverService {
         if let threadId = activeThreadId
             ?? resolvedPreferredThreadId
             ?? threads.first(where: { $0.syncState == .live })?.id {
-            await refreshInFlightTurnState(threadId: threadId)
-            if threadHasActiveOrRunningTurn(threadId) {
-                _ = try? await ensureThreadResumed(threadId: threadId, force: true)
-                if activeThreadId == threadId {
-                    currentOutput = messages(for: threadId)
-                        .reversed()
-                        .first(where: { $0.role == .assistant && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?
-                        .text ?? ""
-                }
-            }
+            await syncActiveThreadState(threadId: threadId)
         }
     }
 

@@ -38,7 +38,8 @@ final class ContentViewModel {
     func connectToBridge(
         pairingPayload: CodeRoverPairingQRPayload,
         coderover: CodeRoverService,
-        preferredTransportURL: String? = nil
+        preferredTransportURL: String? = nil,
+        preferredThreadId: String? = nil
     ) async {
         await stopAutoReconnectForManualScan(coderover: coderover)
         coderover.rememberBridgePairing(pairingPayload)
@@ -52,11 +53,16 @@ final class ContentViewModel {
                     coderover: coderover,
                     serverURL: preferredTransportURL,
                     performAutoRetry: true,
-                    transportLabel: "manual:\(preferredTransportURL)"
+                    transportLabel: "manual:\(preferredTransportURL)",
+                    preferredThreadId: preferredThreadId ?? coderover.activeThreadId
                 )
                 coderover.rememberSuccessfulTransportURL(preferredTransportURL)
             } else {
-                try await connectUsingSavedPairing(coderover: coderover, performAutoRetry: true)
+                try await connectUsingSavedPairing(
+                    coderover: coderover,
+                    performAutoRetry: true,
+                    preferredThreadId: preferredThreadId ?? coderover.activeThreadId
+                )
             }
         } catch {
             if coderover.lastErrorMessage?.isEmpty ?? true {
@@ -87,7 +93,11 @@ final class ContentViewModel {
         }
 
         do {
-            try await connectUsingSavedPairing(coderover: coderover, performAutoRetry: true)
+            try await connectUsingSavedPairing(
+                coderover: coderover,
+                performAutoRetry: true,
+                preferredThreadId: coderover.activeThreadId
+            )
         } catch {
             if coderover.lastErrorMessage?.isEmpty ?? true {
                 coderover.lastErrorMessage = coderover.userFacingConnectFailureMessage(error)
@@ -136,7 +146,11 @@ final class ContentViewModel {
         }
 
         do {
-            try await connectUsingSavedPairing(coderover: coderover, performAutoRetry: true)
+            try await connectUsingSavedPairing(
+                coderover: coderover,
+                performAutoRetry: true,
+                preferredThreadId: coderover.activeThreadId
+            )
         } catch {
             if coderover.lastErrorMessage?.isEmpty ?? true {
                 coderover.lastErrorMessage = coderover.userFacingConnectFailureMessage(error)
@@ -164,7 +178,11 @@ final class ContentViewModel {
         }
 
         do {
-            try await connectUsingSavedPairing(coderover: coderover, performAutoRetry: true)
+            try await connectUsingSavedPairing(
+                coderover: coderover,
+                performAutoRetry: true,
+                preferredThreadId: coderover.activeThreadId
+            )
         } catch {
             if coderover.lastErrorMessage?.isEmpty ?? true {
                 coderover.lastErrorMessage = coderover.userFacingConnectFailureMessage(error)
@@ -194,7 +212,11 @@ final class ContentViewModel {
         }
 
         do {
-            try await connectUsingSavedPairing(coderover: coderover, performAutoRetry: true)
+            try await connectUsingSavedPairing(
+                coderover: coderover,
+                performAutoRetry: true,
+                preferredThreadId: coderover.activeThreadId
+            )
         } catch {
             // Keep the saved pairing so temporary Mac/network outages can recover on the next retry.
         }
@@ -249,7 +271,11 @@ final class ContentViewModel {
                     attempt: max(1, attempt + 1),
                     message: "Reconnecting..."
                 )
-                try await connectUsingSavedPairing(coderover: coderover, performAutoRetry: false)
+                try await connectUsingSavedPairing(
+                    coderover: coderover,
+                    performAutoRetry: false,
+                    preferredThreadId: coderover.activeThreadId
+                )
                 coderover.connectionRecoveryState = .idle
                 coderover.lastErrorMessage = nil
                 coderover.shouldAutoReconnectOnForeground = false
@@ -295,7 +321,8 @@ final class ContentViewModel {
 extension ContentViewModel {
     func connectUsingSavedPairing(
         coderover: CodeRoverService,
-        performAutoRetry: Bool
+        performAutoRetry: Bool,
+        preferredThreadId: String? = nil
     ) async throws {
         let orderedCandidates = coderover.orderedTransportCandidates
         guard !orderedCandidates.isEmpty else {
@@ -321,7 +348,8 @@ extension ContentViewModel {
                     coderover: coderover,
                     serverURL: candidate.url,
                     performAutoRetry: shouldRetrySingleCandidate,
-                    transportLabel: transportLogLabel(candidate)
+                    transportLabel: transportLogLabel(candidate),
+                    preferredThreadId: preferredThreadId ?? coderover.activeThreadId
                 )
                 coderover.rememberSuccessfulTransportURL(candidate.url)
                 return
@@ -350,15 +378,24 @@ extension ContentViewModel {
         }
     }
 
-    func connect(coderover: CodeRoverService, serverURL: String) async throws {
-        try await coderover.connect(serverURL: serverURL, token: "")
+    func connect(
+        coderover: CodeRoverService,
+        serverURL: String,
+        preferredThreadId: String? = nil
+    ) async throws {
+        try await coderover.connect(
+            serverURL: serverURL,
+            token: "",
+            preferredThreadId: preferredThreadId ?? coderover.activeThreadId
+        )
     }
 
     func connectWithAutoRecovery(
         coderover: CodeRoverService,
         serverURL: String,
         performAutoRetry: Bool,
-        transportLabel: String
+        transportLabel: String,
+        preferredThreadId: String? = nil
     ) async throws {
         let maxAttemptIndex = performAutoRetry ? autoReconnectBackoffNanoseconds.count : 0
         var lastError: Error?
@@ -376,7 +413,11 @@ extension ContentViewModel {
                 "connecting transport=\(transportLabel) url=\(serverURL) attempt=\(attemptIndex + 1)/\(maxAttemptIndex + 1)"
             )
             do {
-                try await connect(coderover: coderover, serverURL: serverURL)
+                try await connect(
+                    coderover: coderover,
+                    serverURL: serverURL,
+                    preferredThreadId: preferredThreadId ?? coderover.activeThreadId
+                )
                 debugConnectLog(
                     "connected transport=\(transportLabel) elapsed=\(elapsedString(since: attemptStartedAt))"
                 )
