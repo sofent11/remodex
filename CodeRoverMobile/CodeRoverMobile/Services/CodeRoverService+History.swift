@@ -15,6 +15,7 @@ extension CodeRoverService {
 
         var offset: TimeInterval = 0
         var result: [ChatMessage] = []
+        var itemTypeCounts: [String: Int] = [:]
 
         for turnValue in turns {
             guard let turnObject = turnValue.objectValue else { continue }
@@ -34,8 +35,10 @@ extension CodeRoverService {
                 let itemID = itemObject["id"]?.stringValue
                 let decodedText = decodeItemText(from: itemObject)
                 let imageAttachments = decodeImageAttachments(from: itemObject)
+                let normalizedType = normalizedItemType(itemType)
+                itemTypeCounts[normalizedType, default: 0] += 1
 
-                switch normalizedItemType(itemType) {
+                switch normalizedType {
                 case "usermessage":
                     appendHistoryMessage(
                         to: &result,
@@ -146,6 +149,21 @@ extension CodeRoverService {
                 }
             }
         }
+
+        let typeSummary = itemTypeCounts
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value {
+                    return lhs.key < rhs.key
+                }
+                return lhs.value > rhs.value
+            }
+            .prefix(8)
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ",")
+        debugRuntimeLog(
+            "thread/read decode thread=\(threadId) turns=\(turns.count) messages=\(result.count) "
+            + "itemTypes=\(typeSummary.isEmpty ? "none" : typeSummary)"
+        )
 
         return result
     }

@@ -1,5 +1,5 @@
 // FILE: CodeRoverService+Sync.swift
-// Purpose: Near-real-time sync loop and server-authoritative thread reconciliation.
+// Purpose: Event-driven sync entry points and server-authoritative thread reconciliation.
 // Layer: Service
 // Exports: CodeRoverService sync APIs
 // Depends on: ConversationThread, CodeRoverServiceError
@@ -15,54 +15,7 @@ extension CodeRoverService {
         }
 
         stopSyncLoop()
-        debugSyncLog("sync loop start")
-
-        let listIntervalForegroundNs: UInt64 = 20_000_000_000
-        let listIntervalBackgroundNs: UInt64 = 75_000_000_000
-        let historyIntervalForegroundNs: UInt64 = 15_000_000_000
-        let historyIntervalBackgroundIdleNs: UInt64 = 90_000_000_000
-        let historyIntervalBackgroundRunningNs: UInt64 = 12_000_000_000
-        let watchIntervalForegroundNs: UInt64 = 4_000_000_000
-        let watchIntervalBackgroundNs: UInt64 = 15_000_000_000
-
-        threadListSyncTask = Task { [weak self] in
-            while let self, !Task.isCancelled {
-                await self.syncThreadsList()
-                await self.refreshInactiveRunningBadgeThreads()
-                let interval = self.isAppInForeground ? listIntervalForegroundNs : listIntervalBackgroundNs
-                try? await Task.sleep(nanoseconds: interval)
-            }
-        }
-
-        activeThreadSyncTask = Task { [weak self] in
-            while let self, !Task.isCancelled {
-                if let threadId = self.activeThreadId {
-                    let hasActiveOrRunningTurn = self.threadHasActiveOrRunningTurn(threadId)
-                    await self.syncActiveThreadState(threadId: threadId)
-                    let interval: UInt64
-                    if self.isAppInForeground {
-                        interval = historyIntervalForegroundNs
-                    } else if hasActiveOrRunningTurn {
-                        interval = historyIntervalBackgroundRunningNs
-                    } else {
-                        interval = historyIntervalBackgroundIdleNs
-                    }
-                    try? await Task.sleep(nanoseconds: interval)
-                    continue
-                }
-                let interval = self.isAppInForeground ? historyIntervalForegroundNs : historyIntervalBackgroundIdleNs
-                try? await Task.sleep(nanoseconds: interval)
-            }
-        }
-
-        runningThreadWatchSyncTask = Task { [weak self] in
-            while let self, !Task.isCancelled {
-                await self.refreshInactiveRunningBadgeThreads()
-                let interval = self.isAppInForeground ? watchIntervalForegroundNs : watchIntervalBackgroundNs
-                try? await Task.sleep(nanoseconds: interval)
-            }
-        }
-
+        debugSyncLog("sync loop start mode=event-driven")
         requestImmediateSync(threadId: activeThreadId)
     }
 
@@ -103,8 +56,11 @@ extension CodeRoverService {
 
     func requestImmediateSync(threadId: String? = nil) {
         guard canRunRealtimeSyncLoop else {
+            debugSyncLog("requestImmediateSync skipped thread=\(threadId ?? activeThreadId ?? "none") canRun=false")
             return
         }
+
+        debugSyncLog("requestImmediateSync thread=\(threadId ?? activeThreadId ?? "none")")
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -267,6 +223,8 @@ extension CodeRoverService {
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        lastPublishedMessageSignatureByThread.removeValue(forKey: threadId)
+        foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
         streamingSystemMessageByItemID = streamingSystemMessageByItemID.filter { key, _ in
             !key.hasPrefix("\(threadId)|item:")
         }
@@ -306,6 +264,7 @@ extension CodeRoverService {
 
         hydratedThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
 
         if let turnId = activeTurnIdByThread.removeValue(forKey: threadId) {
             threadIdByTurnID.removeValue(forKey: turnId)
@@ -392,6 +351,8 @@ extension CodeRoverService {
 
         threads.removeAll { $0.id == threadId }
         messagesByThread.removeValue(forKey: threadId)
+        lastPublishedMessageSignatureByThread.removeValue(forKey: threadId)
+        foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
         messagePersistence.save(
             messagesByThread: messagesByThread,
             historyStateByThread: historyStateByThread
@@ -451,9 +412,7 @@ extension CodeRoverService {
     }
 
     func debugSyncLog(_ message: String) {
-#if DEBUG
-        print("[CodeRoverSync] \(message)")
-#endif
+        coderoverDiagnosticLog("CodeRoverSync", message)
     }
 
     // Treats thread as active if either turn mapping or runtime running fallback is present.
@@ -476,18 +435,74 @@ extension CodeRoverService {
     // If the live snapshot fails, fall back to a history refresh instead of trusting stale running state.
     func syncActiveThreadState(threadId: String) async {
         let wasRunning = threadHasActiveOrRunningTurn(threadId)
+        let shouldUseAggressiveForegroundPolling = shouldUseAggressiveForegroundPolling(for: threadId)
         if wasRunning {
             _ = await refreshInFlightTurnState(threadId: threadId)
         }
 
+        let isRunningAfterRefresh = threadHasActiveOrRunningTurn(threadId)
+
         // A reconnect/background transition can leave the current thread onscreen while the
         // realtime stream was interrupted. Force one live resume snapshot on every running-thread
         // poll so the open timeline catches up even when the user never leaves the conversation.
-        if wasRunning || threadHasActiveOrRunningTurn(threadId) {
+        if wasRunning || isRunningAfterRefresh || shouldUseAggressiveForegroundPolling {
             _ = try? await ensureThreadResumed(threadId: threadId, force: true)
         }
 
+        if shouldUseAggressiveForegroundPolling {
+            do {
+                try await loadTailThreadHistory(threadId: threadId, replaceLocalHistory: false)
+            } catch {
+                debugSyncLog(
+                    "foreground codex tail refresh failed thread=\(threadId): \(error.localizedDescription)"
+                )
+                await syncThreadHistory(threadId: threadId, force: true)
+            }
+            return
+        }
+
         await syncThreadHistory(threadId: threadId, force: true)
+    }
+
+    func beginForegroundAggressivePolling(threadId: String, ttl: TimeInterval = 90) {
+        guard !threadId.isEmpty else {
+            return
+        }
+        let deadline = Date().addingTimeInterval(ttl)
+        if let currentDeadline = foregroundAggressivePollingDeadlineByThread[threadId],
+           currentDeadline > deadline {
+            return
+        }
+        foregroundAggressivePollingDeadlineByThread[threadId] = deadline
+    }
+
+    func endForegroundAggressivePolling(threadId: String) {
+        guard !threadId.isEmpty else {
+            return
+        }
+        foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
+    }
+
+    func shouldUseAggressiveForegroundPolling(for threadId: String) -> Bool {
+        guard isAppInForeground,
+              activeThreadId == threadId,
+              threads.first(where: { $0.id == threadId })?.provider == "codex" else {
+            return false
+        }
+
+        if threadHasActiveOrRunningTurn(threadId) {
+            return true
+        }
+
+        guard let deadline = foregroundAggressivePollingDeadlineByThread[threadId] else {
+            return false
+        }
+        if deadline > Date() {
+            return true
+        }
+
+        foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
+        return false
     }
 
     func refreshInactiveRunningBadgeThreads(limit: Int = 3) async {

@@ -21,6 +21,7 @@ const {
   getTrustedPhonePublicKey,
   rememberTrustedPhone,
 } = require("./secure-device-state");
+const { debugLog } = require("./debug-log");
 
 const PAIRING_QR_VERSION = 3;
 const SECURE_PROTOCOL_VERSION = 1;
@@ -554,7 +555,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
 }
 
 function debugSecureLog(message) {
-  console.log(`[coderover][secure] ${message}`);
+  debugLog(`[coderover][secure] ${message}`);
 }
 
 function shortId(value) {

@@ -11,6 +11,25 @@ import UIKit
 import UserNotifications
 import Darwin
 
+private let coderoverDiagnosticLogsEnabled: Bool = {
+#if DEBUG
+    let envValue = ProcessInfo.processInfo.environment["CODEROVER_DEBUG_LOGS"]
+        ?.trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    if let envValue, ["1", "true", "yes", "on"].contains(envValue) {
+        return true
+    }
+    return UserDefaults.standard.bool(forKey: "CodeRoverDebugLogsEnabled")
+#else
+    return false
+#endif
+}()
+
+func coderoverDiagnosticLog(_ prefix: String, _ message: String) {
+    guard coderoverDiagnosticLogsEnabled else { return }
+    print("[\(prefix)] \(message)")
+}
+
 struct CodeRoverApprovalRequest: Identifiable, Sendable {
     let id: String
     let requestID: JSONValue
@@ -240,9 +259,13 @@ final class CodeRoverService {
     var messagesByThread: [String: [ChatMessage]] = [:]
     // Monotonic per-thread revision so views can react to message mutations without hashing full transcripts.
     var messageRevisionByThread: [String: Int] = [:]
+    // Caches the last published timeline signature so no-op sync merges do not trigger UI work.
+    var lastPublishedMessageSignatureByThread: [String: Int] = [:]
     var historyStateByThread: [String: ThreadHistoryState] = [:]
     // Tracks locally started turns whose first realtime item may legitimately bridge over a server-seeded user cursor.
     var pendingRealtimeSeededTurnIDByThread: [String: String] = [:]
+    // Keeps foreground aggressive polling scoped to active/recently-started Codex turns instead of every open thread.
+    var foregroundAggressivePollingDeadlineByThread: [String: Date] = [:]
     var activeThreadListNextCursor: JSONValue = .null
     var activeThreadListHasMore = false
     var syncRealtimeEnabled = true
@@ -368,6 +391,8 @@ final class CodeRoverService {
     var resumedThreadIDs: Set<String> = []
     var pendingRealtimeHistoryCatchUpThreadIDs: Set<String> = []
     var realtimeHistoryCatchUpTaskByThread: [String: Task<Void, Never>] = [:]
+    var pendingHistoryChangedRefreshThreadIDs: Set<String> = []
+    var historyChangedRefreshTaskByThread: [String: Task<Void, Never>] = [:]
     var isAppInForeground = true
     var threadListSyncTask: Task<Void, Never>?
     var activeThreadSyncTask: Task<Void, Never>?

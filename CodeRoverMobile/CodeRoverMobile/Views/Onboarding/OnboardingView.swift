@@ -200,7 +200,5 @@ private struct OnboardingCommandRow: View {
 // MARK: - Preview
 
 #Preview {
-    OnboardingView {
-        print("Continue tapped")
-    }
+    OnboardingView {}
 }

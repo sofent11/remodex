@@ -1033,6 +1033,10 @@ extension CodeRoverService {
                         Self.mergeHistoryMessages(existingMessages, historyMessages, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningIDs)
                     }.value
                     messagesByThread[threadId] = merged
+                    coderoverDiagnosticLog(
+                        "CodeRoverThreads",
+                        "ensureThreadResumed mergedHistory thread=\(threadId) existing=\(existingMessages.count) decoded=\(historyMessages.count) merged=\(merged.count)"
+                    )
                     persistMessages()
                     updateCurrentOutput(for: threadId)
                 }
@@ -1118,6 +1122,7 @@ extension CodeRoverService {
         activeThreadId = threadId
         markThreadAsRunning(threadId)
         protectedRunningFallbackThreadIDs.insert(threadId)
+        beginForegroundAggressivePolling(threadId: threadId)
 
         var includeStructuredSkillItems = supportsStructuredSkillInput && !skillMentions.isEmpty
         var imageURLKey = "url"
@@ -1447,8 +1452,10 @@ extension CodeRoverService {
         pendingMessageId: String,
         threadId: String
     ) throws {
+        endForegroundAggressivePolling(threadId: threadId)
         markMessageDeliveryState(threadId: threadId, messageId: pendingMessageId, state: .failed)
         runningThreadIDs.remove(threadId)
+        protectedRunningFallbackThreadIDs.remove(threadId)
         if shouldTreatAsThreadNotFound(error) {
             throw error
         }
@@ -1465,14 +1472,17 @@ extension CodeRoverService {
         pendingMessageId: String,
         threadId: String
     ) {
+        beginForegroundAggressivePolling(threadId: threadId)
         let turnID = extractTurnID(from: response.result)
         let resolvedTurnID = turnID ?? activeTurnIdByThread[threadId]
+        let fallbackTurnID = resolvedTurnID == nil ? ensurePendingFallbackTurnIfNeeded(threadId: threadId) : nil
+        let deliveryTurnID = resolvedTurnID ?? fallbackTurnID
         let deliveryState: ChatMessageDeliveryState = (resolvedTurnID == nil) ? .pending : .confirmed
         markMessageDeliveryState(
             threadId: threadId,
             messageId: pendingMessageId,
             state: deliveryState,
-            turnId: resolvedTurnID
+            turnId: deliveryTurnID
         )
 
         if let turnID = resolvedTurnID {
@@ -1482,6 +1492,8 @@ extension CodeRoverService {
             pendingRealtimeSeededTurnIDByThread[threadId] = turnID
             protectedRunningFallbackThreadIDs.remove(threadId)
             beginAssistantMessage(threadId: threadId, turnId: turnID)
+        } else if let fallbackTurnID {
+            debugRuntimeLog("turn/start response missing turnId thread=\(threadId) fallbackTurn=\(fallbackTurnID)")
         }
 
         if let index = threads.firstIndex(where: { $0.id == threadId }) {
@@ -1489,6 +1501,132 @@ extension CodeRoverService {
             threads[index].syncState = .live
             threads = sortThreads(threads)
         }
+
+        requestImmediateSync(threadId: threadId)
+    }
+
+    func ensurePendingFallbackTurnIfNeeded(threadId: String) -> String {
+        if let activeTurnId = activeTurnIdByThread[threadId],
+           !activeTurnId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return activeTurnId
+        }
+
+        let fallbackTurnID = pendingFallbackTurnID(for: threadId)
+        activeTurnId = fallbackTurnID
+        activeTurnIdByThread[threadId] = fallbackTurnID
+        threadIdByTurnID[fallbackTurnID] = threadId
+        pendingRealtimeSeededTurnIDByThread[threadId] = fallbackTurnID
+        protectedRunningFallbackThreadIDs.insert(threadId)
+        beginAssistantMessage(threadId: threadId, turnId: fallbackTurnID)
+        return fallbackTurnID
+    }
+
+    func rebindPendingFallbackTurnIfNeeded(threadId: String, to realTurnID: String) {
+        guard let fallbackTurnID = activeTurnIdByThread[threadId],
+              isPendingFallbackTurnID(fallbackTurnID),
+              fallbackTurnID != realTurnID else {
+            return
+        }
+
+        var didMutateMessages = false
+        if var threadMessages = messagesByThread[threadId] {
+            for index in threadMessages.indices {
+                if threadMessages[index].turnId == fallbackTurnID {
+                    threadMessages[index].turnId = realTurnID
+                    didMutateMessages = true
+                }
+
+                if let itemId = threadMessages[index].itemId,
+                   let reboundItemId = reboundFallbackStreamingItemID(itemId, from: fallbackTurnID, to: realTurnID) {
+                    threadMessages[index].itemId = reboundItemId
+                    didMutateMessages = true
+                }
+            }
+
+            if didMutateMessages {
+                messagesByThread[threadId] = threadMessages
+            }
+        }
+
+        let oldTurnStreamingKey = "\(threadId)|\(fallbackTurnID)"
+        let newTurnStreamingKey = "\(threadId)|\(realTurnID)"
+        if !streamingAssistantMessageByTurnID.isEmpty {
+            var reboundStreamingAssistantMessages: [String: String] = [:]
+            reboundStreamingAssistantMessages.reserveCapacity(streamingAssistantMessageByTurnID.count)
+            for (key, value) in streamingAssistantMessageByTurnID {
+                if key == oldTurnStreamingKey {
+                    reboundStreamingAssistantMessages[newTurnStreamingKey] = value
+                } else if key.hasPrefix(oldTurnStreamingKey + "|item:") {
+                    let suffix = String(key.dropFirst(oldTurnStreamingKey.count))
+                    reboundStreamingAssistantMessages[newTurnStreamingKey + suffix] = value
+                } else {
+                    reboundStreamingAssistantMessages[key] = value
+                }
+            }
+            streamingAssistantMessageByTurnID = reboundStreamingAssistantMessages
+        }
+
+        if !streamingSystemMessageByItemID.isEmpty {
+            var reboundStreamingSystemMessages: [String: String] = [:]
+            reboundStreamingSystemMessages.reserveCapacity(streamingSystemMessageByItemID.count)
+            for (key, value) in streamingSystemMessageByItemID {
+                let prefix = "\(threadId)|item:"
+                if key.hasPrefix(prefix) {
+                    let itemId = String(key.dropFirst(prefix.count))
+                    if let reboundItemId = reboundFallbackStreamingItemID(itemId, from: fallbackTurnID, to: realTurnID) {
+                        reboundStreamingSystemMessages["\(threadId)|item:\(reboundItemId)"] = value
+                        continue
+                    }
+                }
+                reboundStreamingSystemMessages[key] = value
+            }
+            streamingSystemMessageByItemID = reboundStreamingSystemMessages
+        }
+
+        threadIdByTurnID.removeValue(forKey: fallbackTurnID)
+        threadIdByTurnID[realTurnID] = threadId
+        if pendingRealtimeSeededTurnIDByThread[threadId] == fallbackTurnID {
+            pendingRealtimeSeededTurnIDByThread[threadId] = realTurnID
+        }
+        if activeTurnId == fallbackTurnID {
+            activeTurnId = realTurnID
+        }
+        activeTurnIdByThread[threadId] = realTurnID
+
+        if didMutateMessages {
+            persistMessages()
+            updateCurrentOutput(for: threadId)
+        }
+
+        debugRuntimeLog("turn fallback rebound thread=\(threadId) from=\(fallbackTurnID) to=\(realTurnID)")
+    }
+
+    func pendingFallbackTurnID(for threadId: String) -> String {
+        "__pending_turn__:\(threadId)"
+    }
+
+    func isPendingFallbackTurnID(_ turnId: String?) -> Bool {
+        guard let turnId else { return false }
+        return turnId.hasPrefix("__pending_turn__:")
+    }
+
+    func reboundFallbackStreamingItemID(_ itemId: String, from oldTurnID: String, to newTurnID: String) -> String? {
+        for kind in [
+            ChatMessageKind.chat,
+            .thinking,
+            .fileChange,
+            .commandExecution,
+            .plan,
+            .userInputPrompt,
+        ] {
+            let oldSyntheticItemID = "turn:\(oldTurnID)|kind:\(kind.rawValue)"
+            guard itemId == oldSyntheticItemID else {
+                continue
+            }
+            return "turn:\(newTurnID)|kind:\(kind.rawValue)"
+        }
+
+        return nil
     }
 
     // Applies steer failure bookkeeping for optimistic user rows without adding an extra system error card.

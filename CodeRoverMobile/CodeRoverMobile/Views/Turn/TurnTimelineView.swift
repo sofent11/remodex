@@ -78,9 +78,11 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                 }
                 .onAppear {
                     beginScrollSessionIfNeeded()
+                    logTimelineRender(reason: "emptyAppear")
                 }
                 .onChange(of: threadID) { _, _ in
                     beginScrollSessionIfNeeded(force: true)
+                    logTimelineRender(reason: "emptyThreadChange")
                 }
         } else {
             ScrollViewReader { proxy in
@@ -224,9 +226,13 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                     beginScrollSessionIfNeeded()
                     recomputeBlockInfoIfNeeded()
                     handleTimelineMutation(using: proxy)
+                    logTimelineRender(reason: "messagesAppear")
                 }
                 .onDisappear {
                     cancelScrollTasks()
+                }
+                .onChange(of: timelineChangeToken) { _, _ in
+                    logTimelineRender(reason: "timelineChange")
                 }
             }
         }
@@ -357,6 +363,21 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
         isScrolledToBottom = true
         autoScrollMode = shouldAnchorToAssistantResponse ? .anchorAssistantResponse : .followBottom
         initialRecoverySnapPendingThreadID = threadID
+    }
+
+    private func logTimelineRender(reason: String) {
+        let visibleCount = visibleMessages.count
+        let visibleTail = visibleMessages.suffix(3).map(Self.describeMessage).joined(separator: ",")
+        coderoverDiagnosticLog(
+            "CodeRoverView",
+            "TurnTimelineView \(reason) thread=\(threadID) messages=\(messages.count) visible=\(visibleCount) hasEarlier=\(hasEarlierMessages) older=\(hasOlderHistory) loadingOlder=\(isLoadingOlderHistory) running=\(isThreadRunning) revision=\(timelineChangeToken) tail=[\(visibleTail)]"
+        )
+    }
+
+    private static func describeMessage(_ message: ChatMessage) -> String {
+        let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = String(text.prefix(24)).replacingOccurrences(of: "\n", with: "\\n")
+        return "\(message.role.rawValue):\(message.kind.rawValue):\(message.id.prefix(6)):\(preview)"
     }
 
     // Cancels any delayed scroll work so old thread sessions cannot move the new one.

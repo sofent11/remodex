@@ -6,6 +6,7 @@
 
 const { randomUUID } = require("crypto");
 const { createRuntimeStore } = require("./runtime-store");
+const { debugLog, debugError } = require("./debug-log");
 const {
   getRuntimeProvider,
   listRuntimeProviders,
@@ -26,6 +27,10 @@ const DEFAULT_THREAD_LIST_PAGE_SIZE = 60;
 const CODEX_HISTORY_CACHE_THREAD_LIMIT = 20;
 const CODEX_HISTORY_CACHE_MESSAGE_LIMIT = 50;
 const HISTORY_CURSOR_VERSION = 1;
+const CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS = 2_000;
+const CODEX_OBSERVED_THREAD_IDLE_TTL_MS = 10 * 60 * 1000;
+const CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS = 5_000;
+const CODEX_OBSERVED_THREAD_LIMIT = 3;
 
 function createRuntimeManager({
   sendApplicationMessage,
@@ -35,6 +40,10 @@ function createRuntimeManager({
   codexAdapter: providedCodexAdapter = null,
   claudeAdapter: providedClaudeAdapter = null,
   geminiAdapter: providedGeminiAdapter = null,
+  codexObservedThreadPollIntervalMs = CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS,
+  codexObservedThreadIdleTtlMs = CODEX_OBSERVED_THREAD_IDLE_TTL_MS,
+  codexObservedThreadErrorBackoffMs = CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS,
+  codexObservedThreadLimit = CODEX_OBSERVED_THREAD_LIMIT,
 } = {}) {
   if (typeof sendApplicationMessage !== "function") {
     throw new Error("createRuntimeManager requires sendApplicationMessage");
@@ -44,6 +53,7 @@ function createRuntimeManager({
   const pendingClientRequests = new Map();
   const activeRunsByThread = new Map();
   const codexHistoryCache = new Map();
+  const codexObservedThreadWatchers = new Map();
 
   let codexWarm = false;
   let codexWarmPromise = null;
@@ -136,7 +146,12 @@ function createRuntimeManager({
         case "thread/read":
           return await handleRequestWithResponse(requestId, async () => {
             await ensureExternalThreadsIndexed();
-            return readThread(stripProviderField(params));
+            const result = await readThread(stripProviderField(params));
+            const threadId = normalizeOptionalString(params.threadId || params.thread_id);
+            if (threadId) {
+              observeCodexThread(threadId, { immediate: false, reason: "thread-read" });
+            }
+            return result;
           });
 
         case "thread/start":
@@ -175,7 +190,9 @@ function createRuntimeManager({
             const threadMeta = await requireThreadMeta(params.threadId || params.thread_id);
             if (threadMeta.provider === "codex") {
               await ensureCodexWarm();
-              return codexAdapter.resumeThread(stripProviderField(params));
+              const result = await codexAdapter.resumeThread(stripProviderField(params));
+              observeCodexThread(threadMeta.id, { immediate: false, reason: "thread-resume" });
+              return result;
             }
             return {
               threadId: threadMeta.id,
@@ -238,6 +255,7 @@ function createRuntimeManager({
                 normalizeOptionalString(result?.turnId || result?.turn_id),
                 params
               );
+              observeCodexThread(threadMeta.id, { immediate: true, reason: "turn-start" });
               return result;
             }
 
@@ -359,6 +377,7 @@ function createRuntimeManager({
     codexWarm = false;
     codexWarmPromise = null;
     codexHistoryCache.clear();
+    stopAllObservedCodexThreadWatchers("transport-attached");
     codexAdapter.attachTransport(transport);
   }
 
@@ -370,34 +389,184 @@ function createRuntimeManager({
     codexWarm = false;
     codexWarmPromise = null;
     codexHistoryCache.clear();
+    stopAllObservedCodexThreadWatchers(reason || "transport-closed");
     codexAdapter.handleTransportClosed(reason);
   }
 
   function shutdown() {
+    stopAllObservedCodexThreadWatchers("shutdown");
     store.shutdown();
   }
 
   function forwardCodexTransportMessage(rawMessage, parsedMessage) {
-    handleCodexHistoryCacheEvent(rawMessage);
-    sendApplicationMessage(decorateCodexTransportMessage(rawMessage, parsedMessage));
+    logCodexRealtimeEvent("codex-in", parsedMessage);
+    const historyChange = handleCodexHistoryCacheEvent(rawMessage);
+    const decoratedMessage = decorateCodexTransportMessage(rawMessage, parsedMessage);
+    sendApplicationMessage(decoratedMessage);
+    logCodexRealtimeEvent("phone-out", decoratedMessage);
+    emitCodexHistoryChangedNotification(historyChange);
+  }
+
+  function observeCodexThread(threadId, { immediate = false, reason = "observe" } = {}) {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    if (!normalizedThreadId) {
+      return;
+    }
+    const threadMeta = store.getThreadMeta(normalizedThreadId);
+    if (threadMeta && threadMeta.provider !== "codex") {
+      return;
+    }
+
+    evictObservedCodexThreadsIfNeeded(normalizedThreadId);
+
+    const now = Date.now();
+    const watcher = codexObservedThreadWatchers.get(normalizedThreadId) || {
+      threadId: normalizedThreadId,
+      lastObservedAt: now,
+      timer: null,
+      inFlight: false,
+      lastSnapshot: null,
+      lastPollAt: 0,
+    };
+    watcher.lastObservedAt = now;
+    codexObservedThreadWatchers.set(normalizedThreadId, watcher);
+    scheduleObservedCodexThreadPoll(watcher, immediate ? 0 : codexObservedThreadPollIntervalMs);
+    debugLog(
+      `${logPrefix} [codex-flow] stage=observe thread=${normalizedThreadId} reason=${reason} immediate=${immediate}`
+    );
+  }
+
+  function evictObservedCodexThreadsIfNeeded(preserveThreadId = null) {
+    if (codexObservedThreadWatchers.size < codexObservedThreadLimit) {
+      return;
+    }
+
+    const evictionCandidates = [...codexObservedThreadWatchers.values()]
+      .filter((entry) => entry.threadId !== preserveThreadId)
+      .sort((left, right) => left.lastObservedAt - right.lastObservedAt);
+    while (codexObservedThreadWatchers.size >= codexObservedThreadLimit && evictionCandidates.length > 0) {
+      const evicted = evictionCandidates.shift();
+      stopObservedCodexThreadWatcher(evicted.threadId, "evicted");
+    }
+  }
+
+  function scheduleObservedCodexThreadPoll(watcher, delayMs) {
+    if (!watcher || !codexObservedThreadWatchers.has(watcher.threadId)) {
+      return;
+    }
+    if (watcher.timer) {
+      clearTimeout(watcher.timer);
+    }
+    watcher.timer = setTimeout(() => {
+      watcher.timer = null;
+      void pollObservedCodexThread(watcher.threadId);
+    }, Math.max(0, delayMs));
+    watcher.timer.unref?.();
+  }
+
+  async function pollObservedCodexThread(threadId) {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    const watcher = normalizedThreadId ? codexObservedThreadWatchers.get(normalizedThreadId) : null;
+    if (!watcher || watcher.inFlight) {
+      return;
+    }
+
+    watcher.inFlight = true;
+    watcher.lastPollAt = Date.now();
+    try {
+      await ensureCodexWarm();
+      const result = await codexAdapter.readThread({
+        threadId: normalizedThreadId,
+        includeTurns: true,
+      });
+      const threadObject = extractThreadFromResult(result);
+      if (!threadObject) {
+        stopObservedCodexThreadWatcher(normalizedThreadId, "thread-missing");
+        return;
+      }
+
+      const decoratedThread = decorateConversationThread(threadObject);
+      upsertOverlayFromThread(decoratedThread);
+      const nextSnapshot = createHistorySnapshotFromThread(decoratedThread);
+      const previousSnapshot = watcher.lastSnapshot || readCodexHistorySnapshot(normalizedThreadId);
+      const historyChange = buildHistoryChangedFromSnapshotDiff(previousSnapshot, nextSnapshot);
+
+      primeCodexHistoryCache(normalizedThreadId, decoratedThread);
+      watcher.lastSnapshot = nextSnapshot;
+
+      if (historyChange) {
+        debugLog(
+          `${logPrefix} [codex-flow] stage=observed-diff thread=${normalizedThreadId}`
+          + ` item=${historyChange.itemId || "none"} cursor=${historyChange.cursor || "none"}`
+        );
+        emitCodexHistoryChangedNotification(historyChange);
+      }
+    } catch (error) {
+      debugError(`${logPrefix} observed thread poll failed thread=${normalizedThreadId}: ${error.message}`);
+      if (codexObservedThreadWatchers.has(normalizedThreadId)) {
+        watcher.inFlight = false;
+        scheduleObservedCodexThreadPoll(watcher, codexObservedThreadErrorBackoffMs);
+      }
+      return;
+    }
+
+    watcher.inFlight = false;
+    if (!codexObservedThreadWatchers.has(normalizedThreadId)) {
+      return;
+    }
+
+    const isStillObserved = (Date.now() - watcher.lastObservedAt) < codexObservedThreadIdleTtlMs;
+    if (!isStillObserved) {
+      stopObservedCodexThreadWatcher(normalizedThreadId, "ttl-expired");
+      return;
+    }
+    scheduleObservedCodexThreadPoll(watcher, codexObservedThreadPollIntervalMs);
+  }
+
+  function stopObservedCodexThreadWatcher(threadId, reason = "stopped") {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    if (!normalizedThreadId) {
+      return;
+    }
+    const watcher = codexObservedThreadWatchers.get(normalizedThreadId);
+    if (!watcher) {
+      return;
+    }
+    if (watcher.timer) {
+      clearTimeout(watcher.timer);
+    }
+    codexObservedThreadWatchers.delete(normalizedThreadId);
+    debugLog(`${logPrefix} [codex-flow] stage=unobserve thread=${normalizedThreadId} reason=${reason}`);
+  }
+
+  function stopAllObservedCodexThreadWatchers(reason = "reset") {
+    for (const threadId of [...codexObservedThreadWatchers.keys()]) {
+      stopObservedCodexThreadWatcher(threadId, reason);
+    }
   }
 
   function decorateCodexTransportMessage(rawMessage, parsedMessage) {
     const method = normalizeOptionalString(parsedMessage?.method);
     const params = asObject(parsedMessage?.params);
-    if (!method || !params) {
+    if (!method) {
       return rawMessage;
     }
 
-    const decoratedParams = decorateNotificationWithHistoryMetadata(method, params, (threadId) =>
-      readCodexHistorySnapshot(threadId)
-    );
-    if (decoratedParams === params) {
+    const normalizedMethod = parsedMessage?.id == null
+      ? (normalizeCodexHistoryEventMethod(method, params) || method)
+      : method;
+    const decoratedParams = params
+      ? decorateNotificationWithHistoryMetadata(normalizedMethod, params, (threadId) =>
+        readCodexHistorySnapshot(threadId)
+      )
+      : params;
+    if (normalizedMethod === method && decoratedParams === params) {
       return rawMessage;
     }
 
     return JSON.stringify({
       ...parsedMessage,
+      method: normalizedMethod,
       params: decoratedParams,
     });
   }
@@ -942,32 +1111,40 @@ function createRuntimeManager({
     try {
       parsed = JSON.parse(rawMessage);
     } catch {
-      return;
+      return null;
     }
 
     const rawMethod = normalizeOptionalString(parsed?.method);
     const params = asObject(parsed?.params);
     if (!rawMethod) {
-      return;
+      return null;
     }
     const method = normalizeCodexHistoryEventMethod(rawMethod, params);
 
     if (method === "thread/started" && params.thread && typeof params.thread === "object") {
       const decoratedThread = decorateConversationThread(params.thread);
       primeCodexHistoryCache(decoratedThread.id, decoratedThread);
-      return;
+      return null;
     }
 
     const threadId = extractCodexNotificationThreadId(params);
     if (!threadId) {
       if (shouldInvalidateCodexHistoryCacheForMethod(method)) {
+        debugLog(`${logPrefix} [codex-flow] stage=cache-invalidate scope=global reason=unscoped-event method=${method}`);
         codexHistoryCache.clear();
+        return {
+          provider: "codex",
+          reason: "cache-invalidated",
+          scope: "global",
+          sourceMethod: method,
+          rawMethod,
+        };
       }
-      return;
+      return null;
     }
     const entry = touchCodexHistoryCache(threadId);
     if (!entry) {
-      return;
+      return null;
     }
 
     if (method === "turn/started") {
@@ -981,7 +1158,7 @@ function createRuntimeManager({
         entry.threadBase.updatedAt = new Date().toISOString();
         writeCodexHistoryCache(threadId, entry);
       }
-      return;
+      return null;
     }
 
     if (method === "turn/completed") {
@@ -991,7 +1168,7 @@ function createRuntimeManager({
         entry.threadBase.updatedAt = new Date().toISOString();
         writeCodexHistoryCache(threadId, entry);
       }
-      return;
+      return null;
     }
 
     if (method === "item/agentMessage/delta") {
@@ -1003,7 +1180,12 @@ function createRuntimeManager({
         delta: extractCodexTextDelta(params),
       });
       writeCodexHistoryCache(threadId, entry);
-      return;
+      return buildCodexHistoryChangedPayload({
+        threadId,
+        sourceMethod: method,
+        rawMethod,
+        params,
+      });
     }
 
     if (method === "item/reasoning/textDelta" || method === "item/reasoning/summaryTextDelta") {
@@ -1014,7 +1196,12 @@ function createRuntimeManager({
         delta: extractCodexTextDelta(params),
       });
       writeCodexHistoryCache(threadId, entry);
-      return;
+      return buildCodexHistoryChangedPayload({
+        threadId,
+        sourceMethod: method,
+        rawMethod,
+        params,
+      });
     }
 
     if (method === "item/toolCall/outputDelta" || method === "item/toolCall/completed") {
@@ -1041,7 +1228,12 @@ function createRuntimeManager({
           : (Array.isArray(asObject(params.item).changes) ? asObject(params.item).changes : []),
       });
       writeCodexHistoryCache(threadId, entry);
-      return;
+      return buildCodexHistoryChangedPayload({
+        threadId,
+        sourceMethod: method,
+        rawMethod,
+        params,
+      });
     }
 
     if (method === "item/commandExecution/outputDelta") {
@@ -1089,7 +1281,16 @@ function createRuntimeManager({
       }
       item.itemObject.text = extractCodexTextDelta(params) || item.itemObject.text || "";
       writeCodexHistoryCache(threadId, entry);
-      return;
+      return buildCodexHistoryChangedPayload({
+        threadId,
+        sourceMethod: method,
+        rawMethod,
+        params: {
+          ...params,
+          turnId,
+          itemId,
+        },
+      });
     }
 
     if (method === "turn/plan/updated" || method === "item/plan/delta") {
@@ -1121,12 +1322,138 @@ function createRuntimeManager({
         item.itemObject.plan = asObject(params.item).plan;
       }
       writeCodexHistoryCache(threadId, entry);
-      return;
+      return buildCodexHistoryChangedPayload({
+        threadId,
+        sourceMethod: method,
+        rawMethod,
+        params: {
+          ...params,
+          turnId,
+          itemId,
+        },
+      });
     }
 
     if (shouldInvalidateCodexHistoryCacheForMethod(method)) {
       codexHistoryCache.delete(threadId);
+      return {
+        provider: "codex",
+        reason: "cache-invalidated",
+        scope: "thread",
+        threadId,
+        sourceMethod: method,
+        rawMethod,
+        turnId: extractCodexNotificationTurnId(params),
+        itemId: extractCodexNotificationItemId(params),
+      };
     }
+
+    return null;
+  }
+
+  function buildCodexHistoryChangedPayload({
+    threadId,
+    sourceMethod,
+    rawMethod,
+    params,
+  }) {
+    const snapshot = readCodexHistorySnapshot(threadId);
+    const itemId = extractCodexNotificationItemId(params);
+    const metadata = itemId ? historyMetadataForItem(snapshot, itemId) : null;
+    return {
+      provider: "codex",
+      reason: "cache-mutated",
+      scope: "thread",
+      threadId,
+      turnId: metadata?.turnId || extractCodexNotificationTurnId(params) || null,
+      itemId: metadata?.itemId || itemId || null,
+      previousItemId: metadata?.previousItemId || null,
+      cursor: metadata?.currentCursor || null,
+      previousCursor: metadata?.previousCursor || null,
+      sourceMethod,
+      rawMethod,
+    };
+  }
+
+  function buildHistoryChangedFromSnapshotDiff(previousSnapshot, nextSnapshot) {
+    const normalizedThreadId = normalizeOptionalString(nextSnapshot?.threadId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+
+    const previousRecords = Array.isArray(previousSnapshot?.records)
+      ? previousSnapshot.records.slice().sort(compareHistoryRecord)
+      : [];
+    const nextRecords = Array.isArray(nextSnapshot?.records)
+      ? nextSnapshot.records.slice().sort(compareHistoryRecord)
+      : [];
+
+    if (previousRecords.length === 0 || nextRecords.length === 0) {
+      return null;
+    }
+
+    const comparisonWindowSize = Math.max(previousRecords.length, CODEX_HISTORY_CACHE_MESSAGE_LIMIT);
+    const previousTailRecords = previousRecords.slice(-comparisonWindowSize);
+    const nextTailRecords = nextRecords.slice(-comparisonWindowSize);
+
+    const previousByItemId = new Map();
+    previousTailRecords.forEach((record) => {
+      const itemId = normalizeOptionalString(record?.itemObject?.id);
+      if (itemId) {
+        previousByItemId.set(itemId, record);
+      }
+    });
+
+    let latestChangedRecord = null;
+    nextTailRecords.forEach((record) => {
+      const itemId = normalizeOptionalString(record?.itemObject?.id);
+      if (!itemId) {
+        return;
+      }
+      const previousRecord = previousByItemId.get(itemId);
+      if (!previousRecord || historyRecordContentSignature(previousRecord) !== historyRecordContentSignature(record)) {
+        latestChangedRecord = record;
+      }
+    });
+
+    if (!latestChangedRecord) {
+      return null;
+    }
+
+    const itemId = normalizeOptionalString(latestChangedRecord?.itemObject?.id) || null;
+    const metadata = itemId ? historyMetadataForItem(nextSnapshot, itemId) : null;
+    return {
+      provider: "codex",
+      reason: "cache-mutated",
+      scope: "thread",
+      threadId: normalizedThreadId,
+      turnId: metadata?.turnId
+        || normalizeOptionalString(latestChangedRecord.turnId)
+        || normalizeOptionalString(latestChangedRecord?.turnMeta?.id)
+        || null,
+      itemId: metadata?.itemId || itemId,
+      previousItemId: metadata?.previousItemId || null,
+      cursor: metadata?.currentCursor || null,
+      previousCursor: metadata?.previousCursor || null,
+      sourceMethod: "thread/read",
+      rawMethod: "thread/read",
+    };
+  }
+
+  function emitCodexHistoryChangedNotification(change) {
+    if (!change || typeof change !== "object") {
+      return;
+    }
+
+    sendApplicationMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "thread/history/changed",
+      params: change,
+    }));
+    logCodexRealtimeEvent("phone-out", {
+      method: "thread/history/changed",
+      params: change,
+    });
   }
 
   function shouldDecorateNotificationWithPreviousItemId(method) {
@@ -1146,16 +1473,17 @@ function createRuntimeManager({
       return null;
     }
 
-    if (normalizedMethod === "coderover/event") {
+    if (normalizedMethod === "coderover/event" || normalizedMethod === "codex/event") {
       const nestedEventType = extractCodexLegacyEventType(params);
       if (nestedEventType) {
         return mapCodexLegacyEventTypeToMethod(nestedEventType);
       }
-      return normalizedMethod;
+      return "coderover/event";
     }
 
-    if (normalizedMethod.startsWith("coderover/event/")) {
-      const suffix = normalizedMethod.slice("coderover/event/".length);
+    if (normalizedMethod.startsWith("coderover/event/") || normalizedMethod.startsWith("codex/event/")) {
+      const prefix = normalizedMethod.startsWith("codex/event/") ? "codex/event/" : "coderover/event/";
+      const suffix = normalizedMethod.slice(prefix.length);
       return mapCodexLegacyEventTypeToMethod(suffix);
     }
 
@@ -1282,7 +1610,7 @@ function createRuntimeManager({
   function normalizeCodexMethodToken(value) {
     return normalizeOptionalString(value)
       ?.toLowerCase()
-      .replace(/[_\-\s]/g, "")
+      .replace(/[\/_\-\s]/g, "")
       || null;
   }
 
@@ -1502,7 +1830,77 @@ function createRuntimeManager({
       nextParams.previousItemId = metadata.previousItemId;
       didChange = true;
     }
+    if (didChange) {
+      debugLog(
+        `${logPrefix} [codex-flow] stage=decorate method=${method}`
+        + ` thread=${metadata.threadId || "none"}`
+        + ` turn=${metadata.turnId || "none"}`
+        + ` item=${metadata.itemId || "none"}`
+        + ` previousItem=${metadata.previousItemId || "none"}`
+        + ` cursor=${metadata.currentCursor || "none"}`
+        + ` previousCursor=${metadata.previousCursor || "none"}`
+      );
+    }
     return didChange ? nextParams : params;
+  }
+
+  function logCodexRealtimeEvent(stage, messageLike) {
+    const summary = summarizeCodexRealtimeMessage(messageLike);
+    if (!summary) {
+      return;
+    }
+    debugLog(`${logPrefix} [codex-flow] stage=${stage} ${summary}`);
+  }
+
+  function summarizeCodexRealtimeMessage(messageLike) {
+    let parsed = null;
+    if (typeof messageLike === "string") {
+      try {
+        parsed = JSON.parse(messageLike);
+      } catch {
+        return `non-json bytes=${messageLike.length}`;
+      }
+    } else if (messageLike && typeof messageLike === "object") {
+      parsed = messageLike;
+    } else {
+      return null;
+    }
+
+    const method = normalizeOptionalString(parsed?.method);
+    const id = parsed?.id;
+    const params = asObject(parsed?.params);
+    const parts = [];
+    if (method) {
+      parts.push(`method=${method}`);
+    } else if (id != null) {
+      parts.push(`response=${String(id)}`);
+    } else {
+      parts.push("message=unknown");
+    }
+    if (params && Object.keys(params).length > 0) {
+      const threadId = extractCodexNotificationThreadId(params);
+      const turnId = extractCodexNotificationTurnId(params);
+      const itemId = extractCodexNotificationItemId(params);
+      if (threadId) {
+        parts.push(`thread=${threadId}`);
+      }
+      if (turnId) {
+        parts.push(`turn=${turnId}`);
+      }
+      if (itemId) {
+        parts.push(`item=${itemId}`);
+      }
+      if (normalizeOptionalString(params.cursor)) {
+        parts.push(`cursor=${normalizeOptionalString(params.cursor)}`);
+      }
+      if (normalizeOptionalString(params.previousCursor || params.previous_cursor)) {
+        parts.push(`previousCursor=${normalizeOptionalString(params.previousCursor || params.previous_cursor)}`);
+      }
+    }
+    if (parsed?.error?.message) {
+      parts.push(`error=${JSON.stringify(parsed.error.message)}`);
+    }
+    return parts.join(" ");
   }
 
   function historyMetadataForItem(snapshot, itemId) {
@@ -1534,6 +1932,26 @@ function createRuntimeManager({
         : null,
       previousItemId: normalizeOptionalString(previousRecord?.itemObject?.id) || null,
     };
+  }
+
+  function historyRecordContentSignature(record) {
+    if (!record || typeof record !== "object") {
+      return "";
+    }
+    return JSON.stringify({
+      turnId: normalizeOptionalString(record.turnId) || normalizeOptionalString(record?.turnMeta?.id) || null,
+      itemId: normalizeOptionalString(record?.itemObject?.id) || null,
+      type: normalizeOptionalString(record?.itemObject?.type) || null,
+      role: normalizeOptionalString(record?.itemObject?.role) || null,
+      text: normalizeOptionalString(record?.itemObject?.text) || "",
+      content: Array.isArray(record?.itemObject?.content) ? record.itemObject.content : [],
+      status: normalizeOptionalString(record?.itemObject?.status) || null,
+      changes: Array.isArray(record?.itemObject?.changes) ? record.itemObject.changes : [],
+      plan: Array.isArray(record?.itemObject?.plan) ? record.itemObject.plan : [],
+      explanation: normalizeOptionalString(record?.itemObject?.explanation) || null,
+      summary: normalizeOptionalString(record?.itemObject?.summary) || null,
+      metadata: asObject(record?.itemObject?.metadata),
+    });
   }
 
   function ensureHistoryTurn(entry, turnId, turnMeta) {

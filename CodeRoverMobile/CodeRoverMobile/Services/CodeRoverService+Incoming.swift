@@ -24,11 +24,13 @@ extension CodeRoverService {
             let message = try decoder.decode(RPCMessage.self, from: payloadData)
             handleIncomingRPCMessage(message)
         } catch {
+            debugRuntimeLog("rpc decode failed bytes=\(text.count) prefix=\(String(text.prefix(180)))")
             lastErrorMessage = "Unable to decode server payload"
         }
     }
 
     func handleIncomingRPCMessage(_ message: RPCMessage) {
+        debugRuntimeLog("rpc <- \(summarizeIncomingRPCMessage(message))")
         if let method = message.method {
             let normalizedMethod = normalizedIncomingMethodName(method)
             if let requestID = message.id {
@@ -44,15 +46,23 @@ extension CodeRoverService {
         }
 
         let requestKey = idKey(from: responseID)
+        let requestContext = pendingRequestContexts[requestKey]
         guard let continuation = pendingRequests.removeValue(forKey: requestKey) else {
             return
         }
         pendingRequestTimeoutTasks.removeValue(forKey: requestKey)?.cancel()
         pendingRequestContexts.removeValue(forKey: requestKey)
+        debugRuntimeLog(
+            "rpc response <- id=\(shortIncomingJSONValue(responseID)) request=\(requestContext?.method ?? "unknown") "
+            + "thread=\(requestContext?.threadId ?? "none") error=\(message.error != nil)"
+        )
 
         if let rpcError = message.error {
             continuation.resume(throwing: CodeRoverServiceError.rpcError(rpcError))
         } else {
+            if lastErrorMessage == "The Mac bridge did not respond in time. Reconnect and try again." {
+                lastErrorMessage = nil
+            }
             continuation.resume(returning: message)
         }
     }
@@ -118,6 +128,7 @@ extension CodeRoverService {
     // Handles stream notifications to keep UI state in sync.
     func handleNotification(method: String, params: JSONValue?) {
         let paramsObject = params?.objectValue
+        debugRuntimeLog("notify <- \(summarizeIncomingNotification(method: method, paramsObject: paramsObject))")
 
         switch method {
         case "thread/started":
@@ -129,6 +140,9 @@ extension CodeRoverService {
         case "thread/status/changed":
             handleThreadStatusChanged(paramsObject)
 
+        case "thread/history/changed":
+            handleThreadHistoryChanged(paramsObject)
+
         case "turn/started":
             handleTurnStarted(paramsObject)
 
@@ -139,6 +153,8 @@ extension CodeRoverService {
             handleTurnPlanUpdated(paramsObject)
 
         case "item/agentMessage/delta",
+             "codex/event/agent_message_content_delta",
+             "codex/event/agent_message_delta",
              "coderover/event/agent_message_content_delta",
              "coderover/event/agent_message_delta":
             appendAgentDelta(from: paramsObject)
@@ -169,25 +185,39 @@ extension CodeRoverService {
             handleCommandExecutionTerminalInteraction(from: paramsObject)
 
         case "coderover/event/exec_command_begin",
+             "codex/event/exec_command_begin",
              "coderover/event/exec_command_output_delta",
+             "codex/event/exec_command_output_delta",
              "coderover/event/exec_command_end",
+             "codex/event/exec_command_end",
              "coderover/event/background_event",
+             "codex/event/background_event",
              "coderover/event/read",
+             "codex/event/read",
              "coderover/event/search",
-             "coderover/event/list_files":
+             "codex/event/search",
+             "coderover/event/list_files",
+             "codex/event/list_files":
             if handleLegacyCodeRoverNamedEvent(method: method, paramsObject: paramsObject) {
                 return
             }
 
-        case "turn/diff/updated", "coderover/event/turn_diff_updated", "coderover/event/turn_diff":
+        case "turn/diff/updated",
+             "coderover/event/turn_diff_updated",
+             "coderover/event/turn_diff",
+             "codex/event/turn_diff_updated",
+             "codex/event/turn_diff":
             handleTurnDiffUpdated(paramsObject)
 
-        case "coderover/event/patch_apply_begin", "coderover/event/patch_apply_end":
+        case "coderover/event/patch_apply_begin",
+             "coderover/event/patch_apply_end",
+             "codex/event/patch_apply_begin",
+             "codex/event/patch_apply_end":
             if handleLegacyPatchApplyMethod(method: method, paramsObject: paramsObject) {
                 return
             }
 
-        case "coderover/event":
+        case "coderover/event", "codex/event":
             if handleLegacyCodeRoverEnvelopeEvent(paramsObject) {
                 return
             }
@@ -198,20 +228,24 @@ extension CodeRoverService {
         case "account/rateLimits/updated":
             handleRateLimitsUpdated(paramsObject)
 
-        case "item/completed", "coderover/event/item_completed", "coderover/event/agent_message":
+        case "item/completed",
+             "coderover/event/item_completed",
+             "coderover/event/agent_message",
+             "codex/event/item_completed",
+             "codex/event/agent_message":
             appendCompletedAgentText(from: paramsObject)
 
-        case "item/started", "coderover/event/item_started":
+        case "item/started", "coderover/event/item_started", "codex/event/item_started":
             handleItemStarted(paramsObject)
 
-        case "error", "coderover/event/error", "turn/failed":
+        case "error", "coderover/event/error", "codex/event/error", "turn/failed":
             handleErrorNotification(paramsObject)
 
         case "serverRequest/resolved":
             handleServerRequestResolved(paramsObject)
 
         default:
-            if method.hasPrefix("coderover/event/"),
+            if isLegacyCodeRoverEventMethod(method),
                handleLegacyCodeRoverNamedEvent(method: method, paramsObject: paramsObject) {
                 return
             }
@@ -399,15 +433,19 @@ extension CodeRoverService {
     private func handleTurnStarted(_ paramsObject: IncomingParamsObject?) {
         let threadId = resolveThreadID(from: paramsObject)
         let turnID = extractTurnIDForTurnLifecycleEvent(from: paramsObject)
+        debugRuntimeLog("turn started thread=\(threadId ?? "none") turn=\(turnID ?? "none")")
 
         if let threadId {
             markThreadAsRunning(threadId)
+            beginForegroundAggressivePolling(threadId: threadId)
             completePendingTurnStartIfNeeded(threadId: threadId, turnId: turnID)
         }
 
         if let threadId, let turnID {
+            rebindPendingFallbackTurnIfNeeded(threadId: threadId, to: turnID)
             activeTurnIdByThread[threadId] = turnID
             threadIdByTurnID[turnID] = threadId
+            pendingRealtimeSeededTurnIDByThread[threadId] = turnID
             protectedRunningFallbackThreadIDs.remove(threadId)
             confirmLatestPendingUserMessage(threadId: threadId, turnId: turnID)
             // Do NOT create the assistant placeholder here.
@@ -431,6 +469,10 @@ extension CodeRoverService {
         let turnFailureMessage = parseTurnFailureMessage(from: paramsObject)
 
         if let threadId = resolveThreadID(from: paramsObject, turnIdHint: completedTurnID) {
+            debugRuntimeLog(
+                "turn completed thread=\(threadId) turn=\(completedTurnID ?? activeTurnIdByThread[threadId] ?? "none") "
+                + "failure=\(turnFailureMessage != nil)"
+            )
             if let completedTurnID {
                 confirmLatestPendingUserMessage(threadId: threadId, turnId: completedTurnID)
             }
@@ -464,6 +506,7 @@ extension CodeRoverService {
             return
         }
 
+        debugRuntimeLog("turn completed unresolved turn=\(completedTurnID ?? "none") failure=\(turnFailureMessage != nil)")
         finalizeAllStreamingState()
 
         guard let turnFailureMessage else {
@@ -493,6 +536,7 @@ extension CodeRoverService {
         let turnId = extractTurnID(from: paramsObject)
         if let threadId = resolveThreadID(from: paramsObject, turnIdHint: turnId) {
             let resolvedTurnID = turnId ?? activeTurnIdByThread[threadId]
+            debugRuntimeLog("turn error thread=\(threadId) turn=\(resolvedTurnID ?? "none") message=\(errorMessage)")
             appendSystemMessage(threadId: threadId, text: "Error: \(errorMessage)", turnId: turnId)
             recordTurnTerminalState(threadId: threadId, turnId: resolvedTurnID, state: .failed)
             noteTurnFinished(turnId: resolvedTurnID)
@@ -500,6 +544,7 @@ extension CodeRoverService {
             markFailedIfUnread(threadId: threadId)
             notifyRunCompletionIfNeeded(threadId: threadId, turnId: resolvedTurnID, result: .failed)
         } else {
+            debugRuntimeLog("turn error unresolved turn=\(turnId ?? "none") message=\(errorMessage)")
             finalizeAllStreamingState()
         }
     }
@@ -545,6 +590,8 @@ extension CodeRoverService {
             || normalizedStatusType == "started"
             || normalizedStatusType == "pending" {
             markThreadAsRunning(threadId)
+            beginForegroundAggressivePolling(threadId: threadId)
+            requestImmediateSync(threadId: threadId)
             return
         }
 
@@ -559,6 +606,7 @@ extension CodeRoverService {
             if activeTurnIdByThread[threadId] != nil
                 || protectedRunningFallbackThreadIDs.contains(threadId)
                 || hasStreamingMessage(in: threadId) {
+                requestImmediateSync(threadId: threadId)
                 return
             }
 
@@ -585,7 +633,67 @@ extension CodeRoverService {
             if normalizedStatusType.contains("error") {
                 markFailedIfUnread(threadId: threadId)
             }
+            requestImmediateSync(threadId: threadId)
         }
+    }
+
+    private func handleThreadHistoryChanged(_ paramsObject: IncomingParamsObject?) {
+        let threadId = extractThreadID(from: paramsObject)
+            ?? {
+                guard let activeThreadId,
+                      threads.first(where: { $0.id == activeThreadId })?.provider == "codex" else {
+                    return nil
+                }
+                return activeThreadId
+            }()
+
+        guard let threadId,
+              activeThreadId == threadId,
+              threads.first(where: { $0.id == threadId })?.provider == "codex" else {
+            return
+        }
+
+        let sourceMethod = firstStringValue(in: paramsObject, keys: ["sourceMethod", "rawMethod"]) ?? "unknown"
+        if sourceMethod == "thread/read" {
+            debugRuntimeLog(
+                "thread history changed refresh thread=\(threadId) "
+                + "source=\(sourceMethod) mode=tail"
+            )
+            scheduleThreadHistoryCatchUp(threadId: threadId)
+            return
+        }
+
+        let eventObject = envelopeEventObject(from: paramsObject)
+        let advancedRealtimeCursor = handleRealtimeHistoryEvent(
+            threadId: threadId,
+            turnId: extractTurnID(from: paramsObject),
+            itemId: extractItemID(from: paramsObject, eventObject: eventObject),
+            previousItemId: extractPreviousItemID(
+                from: paramsObject,
+                eventObject: eventObject
+            ),
+            cursor: extractCursorString(
+                from: paramsObject,
+                eventObject: eventObject
+            ),
+            previousCursor: extractPreviousCursorString(
+                from: paramsObject,
+                eventObject: eventObject
+            )
+        )
+        guard !advancedRealtimeCursor else {
+            debugRuntimeLog(
+                "thread history changed ignored thread=\(threadId) action=advance "
+                + "source=\(sourceMethod)"
+            )
+            return
+        }
+
+        debugRuntimeLog(
+            "thread history changed refresh thread=\(threadId) "
+            + "source=\(sourceMethod)"
+        )
+        scheduleThreadHistoryCatchUp(threadId: threadId)
     }
 
     // Parses the real terminal outcome so UI can distinguish completion from interruption.
@@ -1064,7 +1172,7 @@ extension CodeRoverService {
         )
     }
 
-    // Supports legacy coderover/event envelopes where `msg.type == "turn_diff"` and payload uses unified_diff.
+    // Supports legacy coderover/codex event envelopes where `msg.type == "turn_diff"` and payload uses unified_diff.
     private func handleLegacyCodeRoverEnvelopeEvent(_ paramsObject: IncomingParamsObject?) -> Bool {
         guard let paramsObject,
               let msgObject = paramsObject["msg"]?.objectValue else {
@@ -1124,13 +1232,13 @@ extension CodeRoverService {
         method: String,
         paramsObject: IncomingParamsObject?
     ) -> Bool {
-        guard method.hasPrefix("coderover/event/"),
+        guard let legacyEventPrefix = legacyCodeRoverEventPrefix(in: method),
               let paramsObject else {
             return false
         }
 
         let eventType = method
-            .replacingOccurrences(of: "coderover/event/", with: "")
+            .replacingOccurrences(of: legacyEventPrefix, with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         guard !eventType.isEmpty else {
@@ -1190,6 +1298,20 @@ extension CodeRoverService {
         default:
             return false
         }
+    }
+
+    private func isLegacyCodeRoverEventMethod(_ method: String) -> Bool {
+        legacyCodeRoverEventPrefix(in: method) != nil
+    }
+
+    private func legacyCodeRoverEventPrefix(in method: String) -> String? {
+        if method.hasPrefix("coderover/event/") {
+            return "coderover/event/"
+        }
+        if method.hasPrefix("codex/event/") {
+            return "codex/event/"
+        }
+        return nil
     }
 
     private func handleLegacyPatchApplyMethod(
@@ -2861,6 +2983,72 @@ extension CodeRoverService {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    func summarizeIncomingRPCMessage(_ message: RPCMessage) -> String {
+        if let method = message.method {
+            let normalizedMethod = normalizedIncomingMethodName(method)
+            if let requestID = message.id {
+                return "request method=\(normalizedMethod) id=\(shortIncomingJSONValue(requestID)) "
+                    + summarizeIncomingNotification(method: normalizedMethod, paramsObject: message.params?.objectValue)
+            }
+            return "notification \(summarizeIncomingNotification(method: normalizedMethod, paramsObject: message.params?.objectValue))"
+        }
+
+        if let responseID = message.id {
+            return "response id=\(shortIncomingJSONValue(responseID)) error=\(message.error != nil)"
+        }
+
+        return "message=unknown"
+    }
+
+    func summarizeIncomingNotification(
+        method: String,
+        paramsObject: IncomingParamsObject?
+    ) -> String {
+        let eventObject = envelopeEventObject(from: paramsObject)
+        let threadId = extractThreadID(from: paramsObject)
+            ?? extractThreadID(from: eventObject)
+        let turnId = extractTurnID(from: paramsObject)
+        let itemId = extractItemID(from: paramsObject, eventObject: eventObject)
+        let cursor = extractCursorString(from: paramsObject, eventObject: eventObject)
+        let previousCursor = extractPreviousCursorString(
+            from: paramsObject,
+            eventObject: eventObject
+        )
+        var parts = ["method=\(method)"]
+        if let threadId {
+            parts.append("thread=\(threadId)")
+        }
+        if let turnId {
+            parts.append("turn=\(turnId)")
+        }
+        if let itemId {
+            parts.append("item=\(itemId)")
+        }
+        if let cursor {
+            parts.append("cursor=\(cursor)")
+        }
+        if let previousCursor {
+            parts.append("previousCursor=\(previousCursor)")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    func shortIncomingJSONValue(_ value: JSONValue) -> String {
+        if let stringValue = value.stringValue {
+            return String(stringValue.prefix(12))
+        }
+        if let integerValue = value.intValue {
+            return String(integerValue)
+        }
+        if let doubleValue = value.doubleValue {
+            return String(doubleValue)
+        }
+        if let boolValue = value.boolValue {
+            return String(boolValue)
+        }
+        return "json"
+    }
+
     private func hasStreamingMessage(in threadId: String) -> Bool {
         (messagesByThread[threadId] ?? []).contains(where: { $0.isStreaming })
     }
@@ -2873,28 +3061,45 @@ extension CodeRoverService {
             if let turnId = turnIdHint ?? extractTurnID(from: paramsObject) {
                 threadIdByTurnID[turnId] = threadId
             }
+            debugRuntimeLog("resolveThreadID source=explicit thread=\(threadId) turnHint=\(turnIdHint ?? "none")")
             return threadId
         }
 
         if let turnId = turnIdHint ?? extractTurnID(from: paramsObject),
            let mappedThreadId = threadIdByTurnID[turnId] {
+            debugRuntimeLog("resolveThreadID source=turn-map thread=\(mappedThreadId) turn=\(turnId)")
             return mappedThreadId
+        }
+
+        if let activeThreadId,
+           threads.first(where: { $0.id == activeThreadId })?.provider == "codex" {
+            if activeTurnIdByThread.isEmpty || activeTurnIdByThread.count == 1 {
+                debugRuntimeLog("resolveThreadID source=active-codex-thread thread=\(activeThreadId) activeTurns=\(activeTurnIdByThread.count)")
+                return activeThreadId
+            }
         }
 
         // Conservative fallback: infer only when there is a single unambiguous thread context.
         if activeTurnIdByThread.count == 1,
            let soleRunningThreadId = activeTurnIdByThread.keys.first {
+            debugRuntimeLog("resolveThreadID source=sole-running-thread thread=\(soleRunningThreadId)")
             return soleRunningThreadId
         }
         if threads.count == 1, let soleThreadId = threads.first?.id {
+            debugRuntimeLog("resolveThreadID source=sole-thread thread=\(soleThreadId)")
             return soleThreadId
         }
         if threads.isEmpty,
            messagesByThread.keys.count <= 1,
            let activeThreadId {
+            debugRuntimeLog("resolveThreadID source=active-thread-empty-list thread=\(activeThreadId)")
             return activeThreadId
         }
 
+        debugRuntimeLog(
+            "resolveThreadID failed turnHint=\(turnIdHint ?? "none") activeThread=\(activeThreadId ?? "none") "
+            + "activeTurns=\(activeTurnIdByThread.count) threads=\(threads.count) messageThreads=\(messagesByThread.keys.count)"
+        )
         return nil
     }
 

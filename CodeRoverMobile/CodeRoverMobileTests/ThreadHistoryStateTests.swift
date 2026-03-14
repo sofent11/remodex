@@ -387,6 +387,62 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertTrue(lastMessage.isStreaming)
     }
 
+    func testAssistantRealtimeDeltaFallsBackToActiveTurnWhenTurnIDMissing() async throws {
+        let service = makeService()
+        let threadID = "thread-missing-turn-id"
+        let turnID = "turn-active-fallback"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = turnID
+        service.threadIdByTurnID[turnID] = threadID
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+
+        let catchUpExpectation = expectation(description: "no realtime catch-up")
+        catchUpExpectation.isInverted = true
+        service.requestTransportOverride = { method, _ in
+            if method == "thread/read" {
+                catchUpExpectation.fulfill()
+            }
+            return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+        }
+
+        service.handleNotification(
+            method: "item/started",
+            params: .object([
+                "threadId": .string(threadID),
+                "id": .string("item-active-fallback"),
+                "type": .string("message"),
+                "role": .string("assistant"),
+                "content": .array([
+                    .object([
+                        "type": .string("text"),
+                        "text": .string(""),
+                    ]),
+                ]),
+            ])
+        )
+
+        service.handleNotification(
+            method: "item/agentMessage/delta",
+            params: .object([
+                "threadId": .string(threadID),
+                "id": .string("item-active-fallback"),
+                "delta": .string("stream-continues"),
+            ])
+        )
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+        await fulfillment(of: [catchUpExpectation], timeout: 0.3)
+
+        let lastMessage = try XCTUnwrap(service.messagesByThread[threadID]?.last)
+        XCTAssertEqual(lastMessage.turnId, turnID)
+        XCTAssertEqual(lastMessage.itemId, "item-active-fallback")
+        XCTAssertEqual(lastMessage.text, "stream-continues")
+        XCTAssertTrue(lastMessage.isStreaming)
+    }
+
     func testSyncActiveThreadStateForceResumesRunningThreadBeforeHistoryCatchUp() async throws {
         let service = makeService()
         let threadID = "thread-force-resume"

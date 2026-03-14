@@ -30,6 +30,7 @@ extension CodeRoverService {
             includeJSONRPC: false
         )
         let requestContext = pendingRequestContext(method: method, params: params)
+        debugRuntimeLog("rpc -> request \(summarizeIncomingNotification(method: method, paramsObject: params?.objectValue))")
 
         return try await withCheckedThrowingContinuation { continuation in
             pendingRequests[requestKey] = continuation
@@ -72,6 +73,7 @@ extension CodeRoverService {
 
     // Sends a fire-and-forget RPC notification.
     func sendNotification(method: String, params: JSONValue?) async throws {
+        debugRuntimeLog("rpc -> notify \(summarizeIncomingNotification(method: method, paramsObject: params?.objectValue))")
         let notification = RPCMessage(
             jsonrpc: nil,
             id: nil,

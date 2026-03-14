@@ -101,18 +101,28 @@ class ThreadSummaryRefreshTest {
     }
 
     @Test
-    fun selectedCodexThreadIdForTailSyncRequiresConnectedRunningSelectedThread() {
-        val runningThread = ThreadSummary(id = "thread-running", provider = "claude")
+    fun selectedCodexThreadIdForTailSyncAllowsSelectedCodexThreadWithoutRunningState() {
+        val selectedCodexThread = ThreadSummary(id = "thread-running", provider = "codex")
         val connectedState = AppState(
             connectionPhase = ConnectionPhase.CONNECTED,
-            threads = listOf(runningThread),
-            selectedThreadId = runningThread.id,
-            runningThreadIds = setOf(runningThread.id),
+            threads = listOf(selectedCodexThread),
+            selectedThreadId = selectedCodexThread.id,
         )
 
         assertEquals("thread-running", connectedState.selectedCodexThreadIdForTailSync())
         assertNull(connectedState.copy(connectionPhase = ConnectionPhase.OFFLINE).selectedCodexThreadIdForTailSync())
-        assertNull(connectedState.copy(runningThreadIds = emptySet()).selectedCodexThreadIdForTailSync())
+
+        val selectedClaudeThread = ThreadSummary(id = "thread-claude", provider = "claude")
+        val idleClaudeState = AppState(
+            connectionPhase = ConnectionPhase.CONNECTED,
+            threads = listOf(selectedClaudeThread),
+            selectedThreadId = selectedClaudeThread.id,
+            runningThreadIds = emptySet(),
+        )
+        assertNull(idleClaudeState.selectedCodexThreadIdForTailSync())
+
+        val runningClaudeState = idleClaudeState.copy(runningThreadIds = setOf(selectedClaudeThread.id))
+        assertEquals("thread-claude", runningClaudeState.selectedCodexThreadIdForTailSync())
     }
 
     @Test

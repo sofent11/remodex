@@ -420,7 +420,7 @@ extension ContentViewModel {
     }
 
     private func debugConnectLog(_ message: String) {
-        print("[CodeRoverConnect] \(message)")
+        coderoverDiagnosticLog("CodeRoverConnect", message)
     }
 
     private func transportLogLabel(_ candidate: CodeRoverTransportCandidate) -> String {

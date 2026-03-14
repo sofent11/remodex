@@ -192,6 +192,7 @@ extension CodeRoverService {
     // Handles raw bridge-wire JSON before any JSON-RPC decoding so secure controls stay separate.
     func processIncomingWireText(_ text: String) {
         if let kind = wireMessageKind(from: text) {
+            debugSecureLog("wire <- kind=\(kind) bytes=\(text.count)")
             switch kind {
             case "serverHello", "secureReady", "secureError":
                 bufferSecureControlMessage(kind: kind, rawText: text)
@@ -418,25 +419,68 @@ private extension CodeRoverService {
             )
             let plaintext = try AES.GCM.open(sealedBox, using: secureSession.macToPhoneKey)
             let payload = try JSONDecoder().decode(SecureApplicationPayload.self, from: plaintext)
+            let wasFirstInboundPayload = secureSession.lastInboundCounter < 0
             secureSession.lastInboundCounter = envelope.counter
-            self.secureSession = secureSession
 
             if let bridgeOutboundSeq = payload.bridgeOutboundSeq {
+                if shouldResetBridgeReplayFloor(
+                    bridgeOutboundSeq: bridgeOutboundSeq,
+                    secureSession: secureSession,
+                    wasFirstInboundPayload: wasFirstInboundPayload
+                ) {
+                    debugSecureLog(
+                        "wire <- encryptedEnvelope resetting replay floor bridgeSeq=\(bridgeOutboundSeq) "
+                        + "lastApplied=\(lastAppliedBridgeOutboundSeq) keyEpoch=\(secureSession.keyEpoch)"
+                    )
+                    lastAppliedBridgeOutboundSeq = 0
+                    updateActiveSavedBridgePairing { pairing in
+                        pairing.lastAppliedBridgeOutboundSeq = 0
+                    }
+                    secureSession.lastInboundBridgeOutboundSeq = 0
+                }
                 if bridgeOutboundSeq <= lastAppliedBridgeOutboundSeq {
+                    debugSecureLog("wire <- encryptedEnvelope dropped bridgeSeq=\(bridgeOutboundSeq) lastApplied=\(lastAppliedBridgeOutboundSeq)")
                     return
                 }
                 lastAppliedBridgeOutboundSeq = bridgeOutboundSeq
+                secureSession.lastInboundBridgeOutboundSeq = bridgeOutboundSeq
                 updateActiveSavedBridgePairing { pairing in
                     pairing.lastAppliedBridgeOutboundSeq = bridgeOutboundSeq
                 }
             }
 
+            self.secureSession = secureSession
+
+            debugSecureLog(
+                "wire <- encryptedEnvelope counter=\(envelope.counter) bridgeSeq=\(payload.bridgeOutboundSeq ?? -1) "
+                + "payloadBytes=\(payload.payloadText.count)"
+            )
             lastRawMessage = payload.payloadText
             processIncomingText(payload.payloadText)
         } catch {
             lastErrorMessage = CodeRoverSecureTransportError.decryptFailed.localizedDescription
             secureConnectionState = .rePairRequired
         }
+    }
+
+    func shouldResetBridgeReplayFloor(
+        bridgeOutboundSeq: Int,
+        secureSession: CodeRoverSecureSession,
+        wasFirstInboundPayload: Bool
+    ) -> Bool {
+        guard bridgeOutboundSeq > 0 else {
+            return false
+        }
+
+        guard bridgeOutboundSeq <= lastAppliedBridgeOutboundSeq else {
+            return false
+        }
+
+        // A fresh encrypted session with a lower bridge sequence means the bridge process restarted
+        // and reset its outbound counter. Keep replay protection within a live bridge process, but
+        // allow the first packet of a new secure session to re-establish the floor.
+        return wasFirstInboundPayload
+            && secureSession.lastInboundBridgeOutboundSeq == lastAppliedBridgeOutboundSeq
     }
 
     func trustMac(deviceId: String, publicKey: String) {
@@ -575,7 +619,7 @@ private extension CodeRoverService {
     }
 
     func debugSecureLog(_ message: String) {
-        print("[CodeRoverSecure] \(message)")
+        coderoverDiagnosticLog("CodeRoverSecure", message)
     }
 
     func shortSecureId(_ value: String) -> String {

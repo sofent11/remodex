@@ -16,6 +16,7 @@ const { handleThreadContextRequest } = require("./thread-context-handler");
 const { handleWorkspaceRequest } = require("./workspace-handler");
 const { createRuntimeManager } = require("./runtime-manager");
 const { loadOrCreateBridgeDeviceState } = require("./secure-device-state");
+const { debugLog } = require("./debug-log");
 const {
   buildTransportCandidates,
   startLocalBridgeServer,
@@ -106,6 +107,7 @@ function startBridge() {
 
   // Routes decrypted app payloads through the same bridge handlers as before.
   function handleApplicationMessage(rawMessage) {
+    logBridgeFlow("phone->bridge", rawMessage);
     if (handleThreadContextRequest(rawMessage, sendApplicationResponse)) {
       return;
     }
@@ -123,6 +125,7 @@ function startBridge() {
 
   // Encrypts bridge-generated responses before writing them to the paired transport.
   function sendApplicationResponse(rawMessage) {
+    logBridgeFlow("bridge->phone", rawMessage);
     secureTransport.queueOutboundApplicationMessage(rawMessage);
   }
 
@@ -172,6 +175,7 @@ function startBridge() {
         return;
       }
 
+      logBridgeFlow("codex->bridge", message);
       codexRestartAttempt = 0;
       desktopRefresher.handleOutbound(message);
       rememberThreadFromMessage("codex", message);
@@ -289,6 +293,86 @@ function extractThreadId(rawMessage) {
 
 function readString(value) {
   return typeof value === "string" && value ? value : null;
+}
+
+function logBridgeFlow(stage, rawMessage) {
+  const summary = summarizeBridgeMessage(rawMessage);
+  if (!summary) {
+    return;
+  }
+  debugLog(`[coderover] [bridge-flow] stage=${stage} ${summary}`);
+}
+
+function summarizeBridgeMessage(rawMessage) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(rawMessage);
+  } catch {
+    return `non-json bytes=${rawMessage.length}`;
+  }
+
+  const method = readString(parsed?.method);
+  const id = readString(parsed?.id) || (typeof parsed?.id === "number" ? String(parsed.id) : null);
+  const params = parsed?.params;
+  const threadId = extractBridgeMessageThreadId(parsed);
+  const turnId = extractBridgeMessageTurnId(params);
+  const itemId = extractBridgeMessageItemId(params);
+  const parts = [];
+
+  if (method) {
+    parts.push(`method=${method}`);
+  } else if (id) {
+    parts.push(`response=${id}`);
+  } else {
+    parts.push("message=unknown");
+  }
+  if (threadId) {
+    parts.push(`thread=${threadId}`);
+  }
+  if (turnId) {
+    parts.push(`turn=${turnId}`);
+  }
+  if (itemId) {
+    parts.push(`item=${itemId}`);
+  }
+  if (parsed?.error?.message) {
+    parts.push(`error=${JSON.stringify(parsed.error.message)}`);
+  }
+  return parts.join(" ");
+}
+
+function extractBridgeMessageThreadId(parsed) {
+  const params = parsed?.params;
+  return (
+    extractThreadId(JSON.stringify(parsed))
+    || readString(params?.threadId)
+    || readString(params?.thread_id)
+    || readString(params?.thread?.id)
+    || readString(params?.turn?.threadId)
+    || readString(params?.turn?.thread_id)
+    || readString(params?.item?.threadId)
+    || readString(params?.item?.thread_id)
+  );
+}
+
+function extractBridgeMessageTurnId(params) {
+  return (
+    readString(params?.turnId)
+    || readString(params?.turn_id)
+    || readString(params?.turn?.id)
+    || readString(params?.item?.turnId)
+    || readString(params?.item?.turn_id)
+  );
+}
+
+function extractBridgeMessageItemId(params) {
+  return (
+    readString(params?.itemId)
+    || readString(params?.item_id)
+    || readString(params?.item?.id)
+    || readString(params?.messageId)
+    || readString(params?.message_id)
+  );
 }
 
 module.exports = { startBridge };

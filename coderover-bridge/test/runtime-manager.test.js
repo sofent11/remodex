@@ -20,6 +20,7 @@ function createManagerFixtureWithOptions({
   claudeAdapter: providedClaudeAdapter = null,
   geminiAdapter: providedGeminiAdapter = null,
   useDefaultCodexAdapter = false,
+  runtimeOptions = {},
 } = {}) {
   const messages = [];
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-manager-"));
@@ -50,6 +51,7 @@ function createManagerFixtureWithOptions({
     codexAdapter,
     claudeAdapter,
     geminiAdapter,
+    ...runtimeOptions,
   });
 
   return {
@@ -65,6 +67,10 @@ function createManagerFixtureWithOptions({
 async function drainMicrotasks() {
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function request(fixture, id, method, params) {
@@ -445,11 +451,116 @@ test("forwarded Codex item delta notifications include cursor metadata when cach
     }));
 
     const forwarded = fixture.messages[beforeCount];
+    const historyChanged = fixture.messages[beforeCount + 1];
     assert.ok(forwarded);
     assert.equal(forwarded.method, "item/agentMessage/delta");
     assert.ok(forwarded.params.cursor);
     assert.ok(forwarded.params.previousCursor);
     assert.equal(forwarded.params.previousItemId, "item-3");
+    assert.ok(historyChanged);
+    assert.equal(historyChanged.method, "thread/history/changed");
+    assert.equal(historyChanged.params.threadId, thread.id);
+    assert.equal(historyChanged.params.itemId, "item-4");
+    assert.equal(historyChanged.params.sourceMethod, "item/agentMessage/delta");
+    assert.ok(historyChanged.params.cursor);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("forwarded Codex snake_case delta notifications are normalized before reaching the app", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const thread = buildCodexThread({ messageCount: 0 });
+    fixture.manager.attachCodexTransport({ send() {} });
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "thread/started",
+      params: {
+        thread,
+      },
+    }));
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-snake",
+      },
+    }));
+
+    const beforeCount = fixture.messages.length;
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/agent_message/delta",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-snake",
+        itemId: "item-snake",
+        delta: "hello",
+      },
+    }));
+
+    const forwarded = fixture.messages[beforeCount];
+    assert.ok(forwarded);
+    assert.equal(forwarded.method, "item/agentMessage/delta");
+    assert.equal(forwarded.params.threadId, thread.id);
+    assert.equal(forwarded.params.turnId, "turn-snake");
+    assert.equal(forwarded.params.itemId, "item-snake");
+    assert.ok(forwarded.params.cursor);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("forwarded codex/event legacy delta notifications are normalized before reaching the app", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const thread = buildCodexThread({ messageCount: 0 });
+    fixture.manager.attachCodexTransport({ send() {} });
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "thread/started",
+      params: {
+        thread,
+      },
+    }));
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-legacy-forward",
+      },
+    }));
+
+    const beforeCount = fixture.messages.length;
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "codex/event/agent_message_content_delta",
+      params: {
+        conversationId: thread.id,
+        event: {
+          item: {
+            id: "item-legacy-forward",
+            turnId: "turn-legacy-forward",
+          },
+          delta: "hello",
+        },
+      },
+    }));
+
+    const forwarded = fixture.messages[beforeCount];
+    assert.ok(forwarded);
+    assert.equal(forwarded.method, "item/agentMessage/delta");
+    assert.equal(forwarded.params.conversationId, thread.id);
+    assert.ok(forwarded.params.cursor);
   } finally {
     fixture.cleanup();
   }
@@ -508,6 +619,12 @@ test("legacy Codex event notifications invalidate stale history windows so after
         },
       },
     }));
+    const historyChanged = fixture.messages.at(-1);
+    assert.ok(historyChanged);
+    assert.equal(historyChanged.method, "thread/history/changed");
+    assert.equal(historyChanged.params.threadId, nextThread.id);
+    assert.equal(historyChanged.params.reason, "cache-invalidated");
+    assert.equal(historyChanged.params.sourceMethod, "item/completed");
 
     const afterMessages = await request(fixture, "legacy-after", "thread/read", {
       threadId: threadRef.current.id,
@@ -525,6 +642,75 @@ test("legacy Codex event notifications invalidate stale history windows so after
       ["item-4"]
     );
     assert.equal(transportFixture.readCountsByThread.get(threadRef.current.id), 3);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("codex/event legacy notifications invalidate stale history windows so after reads refetch upstream", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const threadRef = {
+      current: buildCodexThread({
+        threadId: "codex-legacy-prefix-thread",
+        messageCount: 3,
+        turnId: "turn-legacy-prefix",
+      }),
+    };
+    const transportFixture = createDefaultCodexTransportFixture(fixture.manager, { threadRef });
+    fixture.manager.attachCodexTransport(transportFixture.transport);
+
+    const tailMessages = await request(fixture, "legacy-prefix-tail", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 3,
+      },
+    });
+    const tailResponse = responseById(tailMessages, "legacy-prefix-tail");
+    assert.ok(tailResponse);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+
+    threadRef.current = buildCodexThread({
+      threadId: threadRef.current.id,
+      messageCount: 4,
+      turnId: "turn-legacy-prefix",
+    });
+
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "codex/event",
+      params: {
+        conversationId: threadRef.current.id,
+        event: {
+          type: "agent_message",
+          item: {
+            id: "item-4",
+            turnId: "turn-legacy-prefix",
+          },
+          message: "message-4",
+        },
+      },
+    }));
+
+    const afterMessages = await request(fixture, "legacy-prefix-after", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "after",
+        limit: 3,
+        cursor: tailResponse.result.historyWindow.newerCursor,
+      },
+    });
+    const afterResponse = responseById(afterMessages, "legacy-prefix-after");
+    assert.ok(afterResponse);
+    assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
+    assert.deepEqual(
+      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      ["item-4"]
+    );
   } finally {
     fixture.cleanup();
   }
@@ -928,6 +1114,167 @@ test("Codex history cache evicts the least recently used thread after twenty ent
     const rereadResponse = responseById(rereadMessages, "tail-codex-thread-1-reread");
     assert.equal(rereadResponse.result.historyWindow.servedFromCache, false);
     assert.equal(codexFixture.readCountsByThread.get("codex-thread-1"), 3);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("observed Codex threads emit thread/history/changed after bridge-side thread/read polling detects new history", async () => {
+  const threadRef = {
+    current: buildCodexThread({
+      threadId: "codex-observed-thread",
+      messageCount: 2,
+      turnId: "turn-observed",
+    }),
+  };
+  const readCountsByThread = new Map();
+  const codexAdapter = {
+    attachTransport() {},
+    handleIncomingRaw() {},
+    handleTransportClosed() {},
+    isAvailable() {
+      return true;
+    },
+    async request(method) {
+      if (method === "initialize") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    },
+    notify() {},
+    sendRaw() {},
+    async listThreads() {
+      return {
+        threads: [{
+          id: threadRef.current.id,
+          title: threadRef.current.title,
+          preview: threadRef.current.preview,
+          createdAt: threadRef.current.createdAt,
+          updatedAt: threadRef.current.updatedAt,
+          cwd: threadRef.current.cwd,
+        }],
+      };
+    },
+    async readThread(params) {
+      const threadId = params.threadId;
+      readCountsByThread.set(threadId, (readCountsByThread.get(threadId) || 0) + 1);
+      return {
+        thread: JSON.parse(JSON.stringify(threadRef.current)),
+      };
+    },
+    async resumeThread(params) {
+      return {
+        threadId: params.threadId,
+        resumed: true,
+      };
+    },
+  };
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter,
+    runtimeOptions: {
+      codexObservedThreadPollIntervalMs: 20,
+      codexObservedThreadIdleTtlMs: 500,
+      codexObservedThreadErrorBackoffMs: 20,
+    },
+  });
+
+  try {
+    await request(fixture, "observed-tail", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 10,
+      },
+    });
+
+    const beforeCount = fixture.messages.length;
+    threadRef.current = buildCodexThread({
+      threadId: threadRef.current.id,
+      messageCount: 3,
+      turnId: "turn-observed",
+    });
+
+    await sleep(80);
+
+    const newMessages = fixture.messages.slice(beforeCount);
+    const historyChanged = newMessages.find((message) => message.method === "thread/history/changed");
+    assert.ok(historyChanged);
+    assert.equal(historyChanged.params.threadId, threadRef.current.id);
+    assert.equal(historyChanged.params.sourceMethod, "thread/read");
+    assert.equal(historyChanged.params.rawMethod, "thread/read");
+    assert.equal(historyChanged.params.itemId, "item-3");
+    assert.ok(historyChanged.params.cursor);
+    assert.ok(readCountsByThread.get(threadRef.current.id) >= 2);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("observed Codex threads do not emit repeated thread/history/changed for unchanged long histories", async () => {
+  const threadRef = {
+    current: buildCodexThread({
+      threadId: "codex-observed-stable-thread",
+      messageCount: 180,
+      turnId: "turn-observed-stable",
+    }),
+  };
+  const codexAdapter = {
+    attachTransport() {},
+    handleIncomingRaw() {},
+    handleTransportClosed() {},
+    isAvailable() {
+      return true;
+    },
+    async request(method) {
+      if (method === "initialize") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    },
+    notify() {},
+    sendRaw() {},
+    async listThreads() {
+      return {
+        threads: [{
+          id: threadRef.current.id,
+          title: threadRef.current.title,
+          preview: threadRef.current.preview,
+          createdAt: threadRef.current.createdAt,
+          updatedAt: threadRef.current.updatedAt,
+          cwd: threadRef.current.cwd,
+        }],
+      };
+    },
+    async readThread() {
+      return {
+        thread: JSON.parse(JSON.stringify(threadRef.current)),
+      };
+    },
+  };
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter,
+    runtimeOptions: {
+      codexObservedThreadPollIntervalMs: 20,
+      codexObservedThreadIdleTtlMs: 500,
+      codexObservedThreadErrorBackoffMs: 20,
+    },
+  });
+
+  try {
+    await request(fixture, "observed-stable-tail", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 50,
+      },
+    });
+
+    const beforeCount = fixture.messages.length;
+    await sleep(80);
+
+    const newMessages = fixture.messages.slice(beforeCount);
+    const historyChangedMessages = newMessages.filter((message) => message.method === "thread/history/changed");
+    assert.equal(historyChangedMessages.length, 0);
   } finally {
     fixture.cleanup();
   }

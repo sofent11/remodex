@@ -87,7 +87,6 @@ import kotlinx.serialization.json.contentOrNull
 class CodeRoverRepository(context: Context) {
     private companion object {
         const val TAG = "CodeRoverRepo"
-        const val ACTIVE_THREAD_TAIL_SYNC_INTERVAL_MS = 2_000L
     }
 
     private data class ThreadListPage(
@@ -128,6 +127,8 @@ class CodeRoverRepository(context: Context) {
     private val threadHistoryRefreshPending = mutableSetOf<String>()
     private val pendingRealtimeHistoryCatchUpThreadIds = mutableSetOf<String>()
     private val realtimeHistoryCatchUpTaskByThread = mutableMapOf<String, Job>()
+    private val pendingHistoryChangedRefreshThreadIds = mutableSetOf<String>()
+    private val historyChangedRefreshTaskByThread = mutableMapOf<String, Job>()
     private var activeThreadListNextCursor: JsonElement? = JsonNull
     private var activeThreadListHasMore = false
     private var client: SecureBridgeClient? = null
@@ -186,17 +187,6 @@ class CodeRoverRepository(context: Context) {
             ),
             secureMacFingerprint = activePairing?.macIdentityPublicKey?.let(SecureCrypto::fingerprint),
         )
-        scope.launch {
-            while (true) {
-                delay(ACTIVE_THREAD_TAIL_SYNC_INTERVAL_MS)
-                val threadId = state.value.selectedCodexThreadIdForTailSync() ?: continue
-                runCatching {
-                    refreshThreadHistory(threadId, reason = "active-tail-poll")
-                }.onFailure { failure ->
-                    Log.w(TAG, "active thread tail sync failed threadId=$threadId", failure)
-                }
-            }
-        }
     }
 
     fun toggleProjectGroupCollapsed(projectId: String) {
@@ -1831,6 +1821,72 @@ class CodeRoverRepository(context: Context) {
         ) {
             return
         }
+        enqueueRealtimeHistoryCatchUp(threadId)
+    }
+
+    private fun scheduleThreadHistoryCatchUp(threadId: String) {
+        val currentState = state.value
+        if (!currentState.isConnected || currentState.selectedThreadId != threadId) {
+            return
+        }
+        enqueueHistoryChangedRefresh(threadId)
+    }
+
+    private fun enqueueHistoryChangedRefresh(threadId: String) {
+        scope.launch {
+            val currentJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            val shouldStart = realtimeHistoryCatchUpMutex.withLock {
+                pendingHistoryChangedRefreshThreadIds += threadId
+                val existingTask = historyChangedRefreshTaskByThread[threadId]
+                if (existingTask?.isActive == true) {
+                    false
+                } else {
+                    if (currentJob != null) {
+                        historyChangedRefreshTaskByThread[threadId] = currentJob
+                    }
+                    true
+                }
+            }
+            if (!shouldStart) {
+                return@launch
+            }
+            while (true) {
+                realtimeHistoryCatchUpMutex.withLock {
+                    pendingHistoryChangedRefreshThreadIds.remove(threadId)
+                }
+                if (isThreadHistoryRefreshBusy(threadId)) {
+                    delay(150)
+                    realtimeHistoryCatchUpMutex.withLock {
+                        pendingHistoryChangedRefreshThreadIds += threadId
+                    }
+                } else {
+                    runCatching {
+                        loadTailThreadHistory(
+                            threadId = threadId,
+                            replaceLocalHistory = false,
+                            fallbackThreadObject = null,
+                        )
+                    }.onFailure { failure ->
+                        Log.w(TAG, "history-changed tail refresh failed threadId=$threadId", failure)
+                    }
+                }
+                val shouldContinue = realtimeHistoryCatchUpMutex.withLock {
+                    pendingHistoryChangedRefreshThreadIds.contains(threadId)
+                }
+                if (!shouldContinue) {
+                    realtimeHistoryCatchUpMutex.withLock {
+                        val existingTask = historyChangedRefreshTaskByThread[threadId]
+                        if (existingTask === currentJob || existingTask?.isActive != true) {
+                            historyChangedRefreshTaskByThread.remove(threadId)
+                        }
+                    }
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun enqueueRealtimeHistoryCatchUp(threadId: String) {
         scope.launch {
             val currentJob = kotlinx.coroutines.currentCoroutineContext()[Job]
             val shouldStart = realtimeHistoryCatchUpMutex.withLock {
@@ -2967,6 +3023,10 @@ class CodeRoverRepository(context: Context) {
                 handleThreadStatusChanged(params)
             }
 
+            "thread/history/changed" -> {
+                handleThreadHistoryChanged(params)
+            }
+
             "thread/tokenUsage/updated" -> {
                 handleThreadTokenUsageUpdated(params)
             }
@@ -2976,14 +3036,14 @@ class CodeRoverRepository(context: Context) {
             }
 
             "turn/started" -> {
-                val threadId = params.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
                 val turnId = params.resolveTurnId()
                 markRealtimeTurnStarted(threadId = threadId, turnId = turnId)
             }
 
             "turn/plan/updated" -> {
                 val resolvedParams = params ?: return
-                val threadId = resolvedParams.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(resolvedParams) ?: return
                 val turnId = resolvedParams.resolveTurnId()
                 val planState = decodePlanState(resolvedParams)
                 upsertStreamingMessage(
@@ -3010,7 +3070,7 @@ class CodeRoverRepository(context: Context) {
 
             "turn/completed" -> {
                 val resolvedParams = params ?: return
-                val threadId = params.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
                 val turnId = params.resolveTurnId()
 
                 val status = params.string("status") ?: params["turn"]?.jsonObjectOrNull()?.string("status")
@@ -3054,7 +3114,7 @@ class CodeRoverRepository(context: Context) {
             "coderover/event/agent_message_content_delta",
             "coderover/event/agent_message_delta" -> {
                 val resolvedParams = params ?: return
-                val threadId = params.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
                 val itemId = resolvedParams.string("itemId") ?: resolvedParams.string("id")
                 if (!handleRealtimeHistoryEvent(
                     threadId = threadId,
@@ -3077,7 +3137,7 @@ class CodeRoverRepository(context: Context) {
             "item/reasoning/summaryPartAdded",
             "item/reasoning/textDelta" -> {
                 val resolvedParams = params ?: return
-                val threadId = params.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
                 val itemId = resolvedParams.string("itemId") ?: resolvedParams.string("id")
                 if (!handleRealtimeHistoryEvent(
                     threadId = threadId,
@@ -3098,7 +3158,7 @@ class CodeRoverRepository(context: Context) {
 
             "item/plan/delta" -> {
                 val resolvedParams = params ?: return
-                val threadId = resolvedParams.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(resolvedParams) ?: return
                 val planState = decodePlanState(resolvedParams)
                 val itemId = resolvedParams.resolveItemId()
                 if (!handleRealtimeHistoryEvent(
@@ -3126,7 +3186,7 @@ class CodeRoverRepository(context: Context) {
             "coderover/event/turn_diff_updated",
             "coderover/event/turn_diff" -> {
                 val resolvedParams = params ?: return
-                val threadId = params.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
                 val fileChanges = decodeFileChangeEntries(resolvedParams)
                 val itemId = resolvedParams.resolveItemId()
                 if (!handleRealtimeHistoryEvent(
@@ -3154,7 +3214,7 @@ class CodeRoverRepository(context: Context) {
             "item/toolCall/completed",
             "item/tool_call/completed" -> {
                 val resolvedParams = params ?: return
-                val threadId = resolvedParams.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(resolvedParams) ?: return
                 val fileChanges = decodeFileChangeEntries(resolvedParams)
                 val itemId = resolvedParams.resolveItemId()
                 if (!handleRealtimeHistoryEvent(
@@ -3179,7 +3239,7 @@ class CodeRoverRepository(context: Context) {
             "item/commandExecution/outputDelta",
             "item/command_execution/outputDelta" -> {
                 val resolvedParams = params ?: return
-                val threadId = params.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
                 val commandState = decodeCommandState(resolvedParams, completedFallback = false)
                 val itemId = resolvedParams.resolveItemId()
                 if (!handleRealtimeHistoryEvent(
@@ -3205,7 +3265,7 @@ class CodeRoverRepository(context: Context) {
             "coderover/event/item_completed",
             "coderover/event/agent_message" -> {
                 val resolvedParams = params ?: return
-                val threadId = params.resolveThreadId() ?: return
+                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
                 val itemId = resolvedParams.resolveItemId()
                 val previousItemId = resolvedParams.resolvePreviousItemId()
                 if (!handleRealtimeHistoryEvent(
@@ -3368,6 +3428,45 @@ class CodeRoverRepository(context: Context) {
                 )
             }
         }
+    }
+
+    private fun handleThreadHistoryChanged(params: JsonObject?) {
+        val payload = params ?: return
+        val activeThreadId = state.value.selectedThreadId
+        val threadId = payload.resolveThreadId()
+            ?: activeThreadId?.takeIf { selectedId ->
+                state.value.threads.firstOrNull { it.id == selectedId }?.provider.equals("codex", ignoreCase = true)
+            }
+            ?: return
+
+        if (activeThreadId != threadId) {
+            return
+        }
+        if (!state.value.threads.firstOrNull { it.id == threadId }?.provider.equals("codex", ignoreCase = true)) {
+            return
+        }
+
+        val sourceMethod = payload.string("sourceMethod")
+            ?: payload.string("rawMethod")
+            ?: "unknown"
+        if (sourceMethod == "thread/read") {
+            scheduleThreadHistoryCatchUp(threadId)
+            return
+        }
+
+        val advancedRealtimeCursor = handleRealtimeHistoryEvent(
+            threadId = threadId,
+            turnId = payload.resolveTurnId() ?: state.value.activeTurnIdByThread[threadId],
+            itemId = payload.resolveItemId(),
+            previousItemId = payload.resolvePreviousItemId(),
+            cursor = payload.resolveCursor(),
+            previousCursor = payload.resolvePreviousCursor(),
+        )
+        if (advancedRealtimeCursor) {
+            return
+        }
+
+        scheduleThreadHistoryCatchUp(threadId)
     }
 
     private fun handleThreadTokenUsageUpdated(params: JsonObject?) {
@@ -4752,12 +4851,32 @@ private fun normalizeMethodToken(value: String): String {
         .replace("-", "")
 }
 
-internal fun AppState.selectedCodexThreadIdForTailSync(): String? {
-    if (!isConnected) {
-        return null
+internal fun AppState.resolveRealtimeThreadId(payload: JsonObject?): String? {
+    val explicitThreadId = payload.resolveThreadId()
+    if (explicitThreadId != null) {
+        return explicitThreadId
     }
-    val threadId = selectedThreadId ?: return null
-    return threadId.takeIf { threadHasActiveOrRunningTurn(it) }
+
+    val normalizedTurnId = normalizedIdentifier(payload.resolveTurnId())
+    if (normalizedTurnId != null) {
+        activeTurnIdByThread.entries.firstOrNull { entry ->
+            normalizedIdentifier(entry.value) == normalizedTurnId
+        }?.key?.let { return it }
+    }
+
+    if (activeTurnIdByThread.size == 1) {
+        return activeTurnIdByThread.keys.first()
+    }
+
+    val selectedId = selectedThreadId
+    if (selectedId != null) {
+        val selectedThread = threads.firstOrNull { it.id == selectedId }
+        if (threadHasActiveOrRunningTurn(selectedId) || selectedThread?.provider.equals("codex", ignoreCase = true)) {
+            return selectedId
+        }
+    }
+
+    return threads.singleOrNull()?.id
 }
 
 internal fun List<ChatMessage>.hasOptimisticLocalUserTailMessage(turnId: String): Boolean {

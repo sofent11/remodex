@@ -126,6 +126,30 @@ final class CodeRoverServiceIncomingRunIndicatorTests: XCTestCase {
         XCTAssertEqual(service.threadRunBadgeState(for: threadID), .running)
     }
 
+    func testThreadStatusChangedActiveStartsAggressivePollingForForegroundCodexThread() {
+        let service = makeService()
+        let threadID = "thread-\(UUID().uuidString)"
+        service.isConnected = true
+        service.isInitialized = true
+        service.threads = [
+            ConversationThread(id: threadID, provider: "codex")
+        ]
+        service.activeThreadId = threadID
+
+        service.handleNotification(
+            method: "thread/status/changed",
+            params: .object([
+                "threadId": .string(threadID),
+                "status": .object([
+                    "type": .string("running"),
+                ]),
+            ])
+        )
+
+        XCTAssertEqual(service.threadRunBadgeState(for: threadID), .running)
+        XCTAssertNotNil(service.foregroundAggressivePollingDeadlineByThread[threadID])
+    }
+
     func testThreadStatusChangedIdleStopsRunning() {
         let service = makeService()
         let threadID = "thread-\(UUID().uuidString)"
@@ -841,6 +865,45 @@ final class CodeRoverServiceIncomingRunIndicatorTests: XCTestCase {
         XCTAssertEqual(assistantMessages[0].turnId, turnID)
         XCTAssertEqual(assistantMessages[0].itemId, "message-1")
         XCTAssertEqual(assistantMessages[0].text, "Testo finale")
+        XCTAssertFalse(assistantMessages[0].isStreaming)
+    }
+
+    func testCodexEventAgentCompletionUsesMessageIdToFinalizeMatchingStream() {
+        let service = makeService()
+        let threadID = "thread-\(UUID().uuidString)"
+        let turnID = "turn-\(UUID().uuidString)"
+
+        service.handleNotification(
+            method: "codex/event/agent_message_content_delta",
+            params: .object([
+                "conversationId": .string(threadID),
+                "id": .string(turnID),
+                "msg": .object([
+                    "type": .string("agent_message_content_delta"),
+                    "message_id": .string("message-1"),
+                    "delta": .string("Partial"),
+                ]),
+            ])
+        )
+
+        service.handleNotification(
+            method: "codex/event/agent_message",
+            params: .object([
+                "conversationId": .string(threadID),
+                "id": .string(turnID),
+                "msg": .object([
+                    "type": .string("agent_message"),
+                    "message_id": .string("message-1"),
+                    "message": .string("Final"),
+                ]),
+            ])
+        )
+
+        let assistantMessages = service.messages(for: threadID).filter { $0.role == .assistant }
+        XCTAssertEqual(assistantMessages.count, 1)
+        XCTAssertEqual(assistantMessages[0].turnId, turnID)
+        XCTAssertEqual(assistantMessages[0].itemId, "message-1")
+        XCTAssertEqual(assistantMessages[0].text, "Final")
         XCTAssertFalse(assistantMessages[0].isStreaming)
     }
 

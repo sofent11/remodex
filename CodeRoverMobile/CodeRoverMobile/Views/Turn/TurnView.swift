@@ -244,6 +244,26 @@ struct TurnView: View {
                 threadID: thread.id
             )
         }
+        .onAppear {
+            logTimelineSnapshot(
+                reason: "appear",
+                rawMessages: rawMessages,
+                projectedMessages: projectedMessages,
+                timelineChangeToken: timelineChangeToken,
+                activeTurnID: activeTurnID,
+                isThreadRunning: isThreadRunning
+            )
+        }
+        .onChange(of: timelineChangeToken) { _, newValue in
+            logTimelineSnapshot(
+                reason: "timelineChange",
+                rawMessages: rawMessages,
+                projectedMessages: projectedMessages,
+                timelineChangeToken: newValue,
+                activeTurnID: activeTurnID,
+                isThreadRunning: isThreadRunning
+            )
+        }
         .sheet(isPresented: $isShowingThreadPathSheet) {
             if let context = threadNavigationContext {
                 TurnThreadPathSheet(context: context)
@@ -693,6 +713,30 @@ struct TurnView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
+    }
+}
+
+private extension TurnView {
+    func logTimelineSnapshot(
+        reason: String,
+        rawMessages: [ChatMessage],
+        projectedMessages: [ChatMessage],
+        timelineChangeToken: Int,
+        activeTurnID: String?,
+        isThreadRunning: Bool
+    ) {
+        let rawTail = rawMessages.suffix(3).map(Self.describeMessage).joined(separator: ",")
+        let projectedTail = projectedMessages.suffix(3).map(Self.describeMessage).joined(separator: ",")
+        coderoverDiagnosticLog(
+            "CodeRoverView",
+            "TurnView \(reason) thread=\(thread.id) raw=\(rawMessages.count) projected=\(projectedMessages.count) revision=\(timelineChangeToken) activeTurn=\(activeTurnID ?? "nil") running=\(isThreadRunning) rawTail=[\(rawTail)] projectedTail=[\(projectedTail)]"
+        )
+    }
+
+    static func describeMessage(_ message: ChatMessage) -> String {
+        let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = String(text.prefix(24)).replacingOccurrences(of: "\n", with: "\\n")
+        return "\(message.role.rawValue):\(message.kind.rawValue):\(message.id.prefix(6)):\(preview)"
     }
 }
 

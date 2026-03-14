@@ -21,8 +21,14 @@ extension CodeRoverService {
 
     // Refreshes the derived output cache and bumps the thread timeline revision.
     func updateCurrentOutput(for threadId: String) {
-        publishThreadMessagesMutation(for: threadId)
-        noteMessagesChanged(for: threadId)
+        publishThreadMessagesMutationIfNeeded(for: threadId)
+
+        let messageCount = messagesByThread[threadId]?.count ?? 0
+        let revision = messageRevisionByThread[threadId] ?? 0
+        coderoverDiagnosticLog(
+            "CodeRoverMessages",
+            "updateCurrentOutput thread=\(threadId) messages=\(messageCount) revision=\(revision) activeThread=\(activeThreadId ?? "nil")"
+        )
 
         guard activeThreadId == threadId else {
             return
@@ -388,6 +394,58 @@ extension CodeRoverService {
             return
         }
 
+        enqueueRealtimeHistoryCatchUp(threadId: threadId)
+    }
+
+    func scheduleThreadHistoryCatchUp(threadId: String) {
+        guard isConnected, isInitialized else { return }
+        guard activeThreadId == threadId else { return }
+        enqueueHistoryChangedRefresh(threadId: threadId)
+    }
+
+    private func enqueueHistoryChangedRefresh(threadId: String) {
+        pendingHistoryChangedRefreshThreadIDs.insert(threadId)
+        guard historyChangedRefreshTaskByThread[threadId] == nil else { return }
+
+        historyChangedRefreshTaskByThread[threadId] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.pendingHistoryChangedRefreshThreadIDs.remove(threadId)
+                self.historyChangedRefreshTaskByThread.removeValue(forKey: threadId)
+            }
+
+            while self.pendingHistoryChangedRefreshThreadIDs.contains(threadId) {
+                self.pendingHistoryChangedRefreshThreadIDs.remove(threadId)
+
+                if Task.isCancelled {
+                    break
+                }
+
+                if self.loadingThreadIDs.contains(threadId) {
+                    self.pendingHistoryChangedRefreshThreadIDs.insert(threadId)
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    continue
+                }
+
+                do {
+                    try await self.loadTailThreadHistory(
+                        threadId: threadId,
+                        replaceLocalHistory: false
+                    )
+                } catch {
+                    self.debugSyncLog(
+                        "history-changed tail refresh failed thread=\(threadId): \(error.localizedDescription)"
+                    )
+                }
+
+                if self.pendingHistoryChangedRefreshThreadIDs.contains(threadId) {
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                }
+            }
+        }
+    }
+
+    private func enqueueRealtimeHistoryCatchUp(threadId: String) {
         pendingRealtimeHistoryCatchUpThreadIDs.insert(threadId)
         guard realtimeHistoryCatchUpTaskByThread[threadId] == nil else { return }
 
@@ -557,6 +615,11 @@ extension CodeRoverService {
             cursor: cursor,
             previousCursor: previousCursor
         )
+        debugRuntimeLog(
+            "realtime history thread=\(threadId) turn=\(turnId ?? "none") item=\(itemId ?? "none") "
+            + "previousItem=\(previousItemId ?? "none") cursor=\(cursor ?? "none") previousCursor=\(previousCursor ?? "none") "
+            + "action=\(needsCatchUp ? "catchup" : "advance")"
+        )
         if needsCatchUp {
             scheduleRealtimeHistoryCatchUp(
                 threadId: threadId,
@@ -645,6 +708,7 @@ extension CodeRoverService {
         threadId: String,
         replaceLocalHistory: Bool
     ) async throws {
+        debugRuntimeLog("thread/read tail request thread=\(threadId) replaceLocal=\(replaceLocalHistory)")
         let response = try await sendRequest(
             method: "thread/read",
             params: .object([
@@ -666,6 +730,11 @@ extension CodeRoverService {
 
         let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
         let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .tail)
+        debugRuntimeLog(
+            "thread/read tail response thread=\(threadId) decoded=\(historyMessages.count) "
+            + "older=\(historyWindow.olderCursor != nil) newer=\(historyWindow.newerCursor != nil) "
+            + "hasOlder=\(historyWindow.hasOlder) hasNewer=\(historyWindow.hasNewer)"
+        )
         try await applyHistoryWindow(
             threadId: threadId,
             mode: .tail,
@@ -708,6 +777,11 @@ extension CodeRoverService {
         if replaceLocalHistory || !historyMessages.isEmpty {
             messagesByThread[threadId] = mergedMessages
         }
+
+        debugRuntimeLog(
+            "history apply thread=\(threadId) mode=\(mode.rawValue) existing=\(existingMessages.count) "
+            + "incoming=\(historyMessages.count) merged=\(mergedMessages.count) replace=\(replaceLocalHistory)"
+        )
 
         mergeHistoryWindow(
             threadId: threadId,
@@ -2056,6 +2130,7 @@ extension CodeRoverService {
     func markTurnCompleted(threadId: String, turnId: String?) {
         runningThreadIDs.remove(threadId)
         protectedRunningFallbackThreadIDs.remove(threadId)
+        endForegroundAggressivePolling(threadId: threadId)
         clearRunningThreadWatch(threadId)
         let resolvedTurnId = turnId ?? activeTurnIdByThread[threadId]
         if let normalizedTurnId = normalizedIdentifier(resolvedTurnId),
@@ -2189,6 +2264,7 @@ extension CodeRoverService {
         runningThreadIDs.removeAll()
         protectedRunningFallbackThreadIDs.removeAll()
         pendingRealtimeSeededTurnIDByThread.removeAll()
+        foregroundAggressivePollingDeadlineByThread.removeAll()
         streamingAssistantMessageByTurnID.removeAll()
         streamingSystemMessageByItemID.removeAll()
         threadIdByTurnID.removeAll()
@@ -2224,6 +2300,25 @@ extension CodeRoverService {
 // ─── Private helpers ──────────────────────────────────────────
 
 private extension CodeRoverService {
+    func messagePublicationSignature(for threadId: String) -> Int {
+        var hasher = Hasher()
+        hasher.combine(threadId)
+        hasher.combine(messagesByThread[threadId] ?? [])
+        return hasher.finalize()
+    }
+
+    func publishThreadMessagesMutationIfNeeded(for threadId: String) {
+        let signature = messagePublicationSignature(for: threadId)
+        let didChange = lastPublishedMessageSignatureByThread[threadId] != signature
+        publishThreadMessagesMutation(for: threadId)
+        guard didChange else {
+            return
+        }
+
+        lastPublishedMessageSignatureByThread[threadId] = signature
+        noteMessagesChanged(for: threadId)
+    }
+
     // Reassigns one thread timeline back through the top-level dictionary so Observation
     // reliably publishes in-place element edits (for example streaming text deltas).
     func publishThreadMessagesMutation(for threadId: String) {
@@ -2241,6 +2336,11 @@ private extension CodeRoverService {
         var nextRevisions = messageRevisionByThread
         nextRevisions[threadId, default: 0] &+= 1
         messageRevisionByThread = nextRevisions
+
+        coderoverDiagnosticLog(
+            "CodeRoverMessages",
+            "noteMessagesChanged thread=\(threadId) revision=\(nextRevisions[threadId] ?? 0)"
+        )
     }
 
     // Late activity notifications can arrive after turn/completed.

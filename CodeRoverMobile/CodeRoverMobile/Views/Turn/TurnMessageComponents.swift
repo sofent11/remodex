@@ -220,6 +220,8 @@ struct MarkdownTextView: View {
             .font(AppFont.body())
             .textual.inlineStyle(inlineStyle)
             .textual.codeBlockStyle(CodeRoverMarkdownCodeBlockStyle())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
 
         if enablesSelection {
             baseView
@@ -759,16 +761,18 @@ struct MessageRow: View, Equatable {
 
     var body: some View {
         let text = displayText
-        switch message.role {
-        case .user:
-            userBubble(text: text)
-        case .assistant:
-            assistantView(text: text)
-        case .system:
-            VStack(alignment: .leading, spacing: 8) {
-                systemView(text: text)
-                if let blockText = copyBlockText {
-                    CopyBlockButton(text: blockText)
+        Group {
+            switch message.role {
+            case .user:
+                userBubble(text: text)
+            case .assistant:
+                assistantView(text: text)
+            case .system:
+                VStack(alignment: .leading, spacing: 8) {
+                    systemView(text: text)
+                    if let blockText = copyBlockText {
+                        CopyBlockButton(text: blockText)
+                    }
                 }
             }
         }

@@ -33,16 +33,26 @@ extension CodeRoverService {
 
         guard let context = resolveAssistantEventContext(
             paramsObject: paramsObject,
-            eventObject: eventObject,
-            requiresTurnId: true
-        ),
-        let turnId = context.identity.turnId else {
+            eventObject: eventObject
+        ) else {
+            debugRuntimeLog("assistant delta dropped reason=unresolved-context \(summarizeIncomingNotification(method: "item/agentMessage/delta", paramsObject: paramsObject))")
+            return
+        }
+        let turnId = resolvedAssistantRealtimeTurnID(
+            threadId: context.threadId,
+            explicitTurnId: context.identity.turnId
+        )
+        guard let turnId else {
+            debugRuntimeLog(
+                "assistant delta dropped reason=missing-turn thread=\(context.threadId) item=\(context.identity.itemId ?? "none") "
+                + "activeTurn=\(activeTurnIdByThread[context.threadId] ?? "none")"
+            )
             return
         }
 
         markThreadAsRunning(context.threadId)
         // Apply streaming delta immediately; history catch-up runs in background.
-        handleRealtimeHistoryEvent(
+        let advancedRealtimeCursor = handleRealtimeHistoryEvent(
             threadId: context.threadId,
             turnId: context.identity.turnId ?? activeTurnIdByThread[context.threadId],
             itemId: context.identity.itemId,
@@ -58,6 +68,10 @@ extension CodeRoverService {
                 from: paramsObject,
                 eventObject: eventObject
             )
+        )
+        debugRuntimeLog(
+            "assistant delta applied thread=\(context.threadId) turn=\(turnId) item=\(context.identity.itemId ?? "none") "
+            + "chars=\(delta.count) historyAction=\(advancedRealtimeCursor ? "advance" : "catchup")"
         )
         appendAssistantDelta(
             threadId: context.threadId,
@@ -85,8 +99,11 @@ extension CodeRoverService {
             guard let context = resolveAssistantEventContext(
                 paramsObject: paramsObject,
                 eventObject: eventObject
-            ) else { return }
-            handleRealtimeHistoryEvent(
+            ) else {
+                debugRuntimeLog("assistant completed dropped reason=unresolved-legacy-context \(summarizeIncomingNotification(method: "item/completed", paramsObject: paramsObject))")
+                return
+            }
+            let advancedRealtimeCursor = handleRealtimeHistoryEvent(
                 threadId: context.threadId,
                 turnId: context.identity.turnId ?? activeTurnIdByThread[context.threadId],
                 itemId: context.identity.itemId,
@@ -102,6 +119,10 @@ extension CodeRoverService {
                     from: paramsObject,
                     eventObject: eventObject
                 )
+            )
+            debugRuntimeLog(
+                "assistant completed legacy thread=\(context.threadId) turn=\(context.identity.turnId ?? activeTurnIdByThread[context.threadId] ?? "none") "
+                + "item=\(context.identity.itemId ?? "none") chars=\(text.count) historyAction=\(advancedRealtimeCursor ? "advance" : "catchup")"
             )
             completeAssistantMessage(
                 threadId: context.threadId,
@@ -136,8 +157,11 @@ extension CodeRoverService {
             paramsObject: paramsObject,
             eventObject: eventObject,
             itemObject: itemObject
-        ) else { return }
-        handleRealtimeHistoryEvent(
+        ) else {
+            debugRuntimeLog("assistant completed dropped reason=unresolved-context \(summarizeIncomingNotification(method: "item/completed", paramsObject: paramsObject))")
+            return
+        }
+        let advancedRealtimeCursor = handleRealtimeHistoryEvent(
             threadId: context.threadId,
             turnId: context.identity.turnId ?? activeTurnIdByThread[context.threadId],
             itemId: context.identity.itemId,
@@ -156,6 +180,10 @@ extension CodeRoverService {
                 eventObject: eventObject,
                 itemObject: itemObject
             )
+        )
+        debugRuntimeLog(
+            "assistant completed thread=\(context.threadId) turn=\(context.identity.turnId ?? activeTurnIdByThread[context.threadId] ?? "none") "
+            + "item=\(context.identity.itemId ?? "none") chars=\(text.count) historyAction=\(advancedRealtimeCursor ? "advance" : "catchup")"
         )
         completeAssistantMessage(
             threadId: context.threadId,
@@ -198,12 +226,23 @@ extension CodeRoverService {
         guard let context = resolveAssistantEventContext(
             paramsObject: paramsObject,
             eventObject: eventObject,
-            itemObject: itemObject,
-            requiresTurnId: true
-        ),
-        let turnId = context.identity.turnId else {
+            itemObject: itemObject
+        ) else {
+            debugRuntimeLog("assistant started dropped reason=unresolved-context \(summarizeIncomingNotification(method: "item/started", paramsObject: paramsObject))")
             return
         }
+        let turnId = resolvedAssistantRealtimeTurnID(
+            threadId: context.threadId,
+            explicitTurnId: context.identity.turnId
+        )
+        guard let turnId else {
+            debugRuntimeLog(
+                "assistant started dropped reason=missing-turn thread=\(context.threadId) item=\(context.identity.itemId ?? "none") "
+                + "activeTurn=\(activeTurnIdByThread[context.threadId] ?? "none")"
+            )
+            return
+        }
+        debugRuntimeLog("assistant started thread=\(context.threadId) turn=\(turnId) item=\(context.identity.itemId ?? "none")")
         beginAssistantMessage(
             threadId: context.threadId,
             turnId: turnId,
@@ -213,6 +252,31 @@ extension CodeRoverService {
 }
 
 private extension CodeRoverService {
+    func resolvedAssistantRealtimeTurnID(threadId: String, explicitTurnId: String?) -> String? {
+        if let explicitTurnId = normalizedIdentifier(explicitTurnId) {
+            return explicitTurnId
+        }
+        if let activeTurnId = normalizedIdentifier(activeTurnIdByThread[threadId]) {
+            return activeTurnId
+        }
+        guard shouldCreateAssistantRealtimeFallbackTurn(threadId: threadId) else {
+            return nil
+        }
+        let fallbackTurnId = ensurePendingFallbackTurnIfNeeded(threadId: threadId)
+        debugRuntimeLog("assistant realtime fallback thread=\(threadId) turn=\(fallbackTurnId)")
+        return fallbackTurnId
+    }
+
+    func shouldCreateAssistantRealtimeFallbackTurn(threadId: String) -> Bool {
+        if runningThreadIDs.contains(threadId) || protectedRunningFallbackThreadIDs.contains(threadId) {
+            return true
+        }
+        guard activeThreadId == threadId else {
+            return false
+        }
+        return threads.first(where: { $0.id == threadId })?.provider == "codex"
+    }
+
     // Extracts assistant delta text across stable + legacy coderover/event envelopes.
     func extractAssistantDeltaText(
         from paramsObject: IncomingParamsObject,

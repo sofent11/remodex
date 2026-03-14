@@ -330,9 +330,7 @@ extension CodeRoverService {
     }
 
     func debugRuntimeLog(_ message: String) {
-#if DEBUG
-        print("[CodeRoverRuntime] \(message)")
-#endif
+        coderoverDiagnosticLog("CodeRoverRuntime", message)
     }
 
     func shouldRetryWithApprovalPolicyFallback(_ error: Error) -> Bool {
