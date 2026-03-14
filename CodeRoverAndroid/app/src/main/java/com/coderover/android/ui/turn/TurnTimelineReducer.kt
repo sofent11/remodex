@@ -50,10 +50,24 @@ internal enum class ReplyPresentation {
 }
 
 internal fun projectTimelineMessages(messages: List<ChatMessage>): List<ChatMessage> {
-    val reordered = enforceIntraTurnOrder(messages)
+    val visibleMessages = removeHiddenSystemMarkers(messages)
+    val reordered = enforceIntraTurnOrder(visibleMessages)
     val collapsedThinking = collapseConsecutiveThinkingMessages(reordered)
     val dedupedFileChanges = removeDuplicateFileChangeMessages(collapsedThinking)
     return removeDuplicateAssistantMessages(dedupedFileChanges)
+}
+
+internal fun assistantResponseAnchorMessageId(
+    messages: List<ChatMessage>,
+    activeTurnId: String?,
+): String? {
+    if (activeTurnId != null) {
+        val message = messages.lastOrNull { it.role == MessageRole.ASSISTANT && it.turnId == activeTurnId }
+        if (message != null) {
+            return message.id
+        }
+    }
+    return messages.lastOrNull { it.role == MessageRole.ASSISTANT && it.isStreaming }?.id
 }
 
 internal fun buildTimelineRenderItems(messages: List<ChatMessage>): List<TimelineRenderItem> {
@@ -207,6 +221,12 @@ private fun intraTurnPriority(message: ChatMessage): Int {
         }
 
         MessageRole.ASSISTANT -> 4
+    }
+}
+
+private fun removeHiddenSystemMarkers(messages: List<ChatMessage>): List<ChatMessage> {
+    return messages.filterNot { message ->
+        message.role == MessageRole.SYSTEM && message.itemId == TurnSessionDiffResetMarker.MANUAL_PUSH_ITEM_ID
     }
 }
 
