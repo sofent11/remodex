@@ -41,12 +41,6 @@ extension CodeRoverService {
         }
 
         markThreadAsRunning(context.threadId)
-        appendAssistantDelta(
-            threadId: context.threadId,
-            turnId: turnId,
-            itemId: context.identity.itemId,
-            delta: delta
-        )
         scheduleRealtimeHistoryCatchUp(
             threadId: context.threadId,
             itemId: context.identity.itemId,
@@ -54,6 +48,12 @@ extension CodeRoverService {
                 from: paramsObject,
                 eventObject: eventObject
             )
+        )
+        appendAssistantDelta(
+            threadId: context.threadId,
+            turnId: turnId,
+            itemId: context.identity.itemId,
+            delta: delta
         )
     }
 
@@ -76,12 +76,6 @@ extension CodeRoverService {
                 paramsObject: paramsObject,
                 eventObject: eventObject
             ) else { return }
-            completeAssistantMessage(
-                threadId: context.threadId,
-                turnId: context.identity.turnId,
-                itemId: context.identity.itemId,
-                text: text
-            )
             scheduleRealtimeHistoryCatchUp(
                 threadId: context.threadId,
                 itemId: context.identity.itemId,
@@ -89,6 +83,12 @@ extension CodeRoverService {
                     from: paramsObject,
                     eventObject: eventObject
                 )
+            )
+            completeAssistantMessage(
+                threadId: context.threadId,
+                turnId: context.identity.turnId,
+                itemId: context.identity.itemId,
+                text: text
             )
             return
         }
@@ -118,12 +118,6 @@ extension CodeRoverService {
             eventObject: eventObject,
             itemObject: itemObject
         ) else { return }
-        completeAssistantMessage(
-            threadId: context.threadId,
-            turnId: context.identity.turnId,
-            itemId: context.identity.itemId,
-            text: text
-        )
         scheduleRealtimeHistoryCatchUp(
             threadId: context.threadId,
             itemId: context.identity.itemId,
@@ -132,6 +126,12 @@ extension CodeRoverService {
                 eventObject: eventObject,
                 itemObject: itemObject
             )
+        )
+        completeAssistantMessage(
+            threadId: context.threadId,
+            turnId: context.identity.turnId,
+            itemId: context.identity.itemId,
+            text: text
         )
     }
 

@@ -19,6 +19,7 @@ extension CodeRoverService {
 
     // Refreshes the derived output cache and bumps the thread timeline revision.
     func updateCurrentOutput(for threadId: String) {
+        publishThreadMessagesMutation(for: threadId)
         noteMessagesChanged(for: threadId)
 
         guard activeThreadId == threadId else {
@@ -284,7 +285,12 @@ extension CodeRoverService {
         guard !loadingThreadIDs.contains(threadId) else { return }
 
         buildLegacyHistoryStateIfNeeded(threadId: threadId)
-        guard let requestAnchor = nextOlderHistoryAnchor(for: threadId) else { return }
+        guard let requestAnchor = nextOlderHistoryAnchor(for: threadId) else {
+            if (messagesByThread[threadId] ?? []).isEmpty {
+                try await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
+            }
+            return
+        }
 
         historyStateByThread[threadId, default: ThreadHistoryState()].isLoadingOlder = true
         loadingThreadIDs.insert(threadId)
@@ -504,10 +510,13 @@ extension CodeRoverService {
         itemId: String?,
         previousItemId: String?
     ) -> Bool {
+        let latestLoadedItemId = normalizedIdentifier(
+            historyStateByThread[threadId]?.newestLoadedAnchor?.itemId
+        )
         let normalizedItemId = normalizedIdentifier(itemId)
         let normalizedPreviousItemId = normalizedIdentifier(previousItemId)
 
-        let latestItemId = messagesByThread[threadId]?
+        let latestItemId = latestLoadedItemId ?? messagesByThread[threadId]?
             .last(where: { message in
                 let trimmed = message.itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return !trimmed.isEmpty
@@ -1552,6 +1561,7 @@ extension CodeRoverService {
             messagesByThread[threadId]?[index].isStreaming = false
             messagesByThread[threadId]?[index].kind = kind
             persistMessages()
+            updateCurrentOutput(for: threadId)
         }
 
         streamingSystemMessageByItemID.removeValue(forKey: key)
@@ -1994,9 +2004,23 @@ extension CodeRoverService {
 // ─── Private helpers ──────────────────────────────────────────
 
 private extension CodeRoverService {
+    // Reassigns one thread timeline back through the top-level dictionary so Observation
+    // reliably publishes in-place element edits (for example streaming text deltas).
+    func publishThreadMessagesMutation(for threadId: String) {
+        guard let threadMessages = messagesByThread[threadId] else {
+            return
+        }
+
+        var nextMessagesByThread = messagesByThread
+        nextMessagesByThread[threadId] = threadMessages
+        messagesByThread = nextMessagesByThread
+    }
+
     // Bumps a thread-local revision whenever its message timeline changes.
     func noteMessagesChanged(for threadId: String) {
-        messageRevisionByThread[threadId, default: 0] &+= 1
+        var nextRevisions = messageRevisionByThread
+        nextRevisions[threadId, default: 0] &+= 1
+        messageRevisionByThread = nextRevisions
     }
 
     // Late activity notifications can arrive after turn/completed.

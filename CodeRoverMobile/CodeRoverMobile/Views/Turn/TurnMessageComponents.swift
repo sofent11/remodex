@@ -223,10 +223,16 @@ struct MarkdownTextView: View {
 
         if enablesSelection {
             baseView
+                .id(markdownRenderIdentity)
                 .textual.textSelection(.enabled)
         } else {
             baseView
+                .id(markdownRenderIdentity)
         }
+    }
+
+    private var markdownRenderIdentity: String {
+        "\(profile.cacheKey)|\(text.hashValue)"
     }
 }
 
@@ -912,6 +918,15 @@ struct MessageRow: View, Equatable {
         return (path, trailing)
     }
 
+    private func markdownSegmentIdentity(_ segment: MarkdownSegment) -> String {
+        switch segment {
+        case .prose(let prose):
+            return "prose|\(prose.hashValue)"
+        case .codeBlock(let language, let code):
+            return "code|\(language ?? "")|\(code.hashValue)"
+        }
+    }
+
     private func assistantView(text: String) -> some View {
         let commentContent = CodeCommentDirectiveContentCache.content(
             messageID: message.id,
@@ -941,8 +956,10 @@ struct MessageRow: View, Equatable {
                             profile: .assistantProse,
                             enablesSelection: enablesInlineMarkdownSelectionInTimeline
                         )
+                        .id(markdownSegmentIdentity(segment))
                     case .codeBlock(let language, let code):
                         CodeBlockView(language: language, code: code, profile: .assistantProse)
+                            .id(markdownSegmentIdentity(segment))
                     }
                 }
             }

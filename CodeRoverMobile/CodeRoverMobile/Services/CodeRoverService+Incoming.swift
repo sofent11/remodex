@@ -693,17 +693,17 @@ extension CodeRoverService {
 
         let itemId = extractItemID(from: paramsObject, eventObject: eventObject)
         if let itemId, !itemId.isEmpty {
+            scheduleRealtimeHistoryCatchUp(
+                threadId: threadId,
+                itemId: itemId,
+                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
+            )
             appendStreamingSystemItemDelta(
                 threadId: threadId,
                 turnId: resolvedTurnId,
                 itemId: itemId,
                 kind: .thinking,
                 delta: delta
-            )
-            scheduleRealtimeHistoryCatchUp(
-                threadId: threadId,
-                itemId: itemId,
-                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
             )
             return
         }
@@ -745,17 +745,17 @@ extension CodeRoverService {
 
         let itemId = extractItemID(from: paramsObject, eventObject: eventObject)
         if let itemId, !itemId.isEmpty {
+            scheduleRealtimeHistoryCatchUp(
+                threadId: threadId,
+                itemId: itemId,
+                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
+            )
             appendStreamingSystemItemDelta(
                 threadId: threadId,
                 turnId: resolvedTurnId,
                 itemId: itemId,
                 kind: .fileChange,
                 delta: delta
-            )
-            scheduleRealtimeHistoryCatchUp(
-                threadId: threadId,
-                itemId: itemId,
-                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
             )
             return
         }
@@ -808,17 +808,17 @@ extension CodeRoverService {
 
         let itemId = extractItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
         if let itemId, !itemId.isEmpty {
+            scheduleRealtimeHistoryCatchUp(
+                threadId: threadId,
+                itemId: itemId,
+                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
+            )
             appendStreamingSystemItemDelta(
                 threadId: threadId,
                 turnId: resolvedTurnId,
                 itemId: itemId,
                 kind: .fileChange,
                 delta: delta
-            )
-            scheduleRealtimeHistoryCatchUp(
-                threadId: threadId,
-                itemId: itemId,
-                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
             )
             return
         }
@@ -868,15 +868,15 @@ extension CodeRoverService {
 
         let statusText = decodeCommandExecutionStatusText(payloadObject, isCompleted: false)
         appendCommandExecutionOutputToDetails(itemId: context.itemId, paramsObject: paramsObject, eventObject: eventObject)
-        publishCommandExecutionStatus(
-            context: context,
-            statusText: statusText,
-            isStreaming: true
-        )
         scheduleRealtimeHistoryCatchUp(
             threadId: context.threadId,
             itemId: context.itemId,
             previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
+        )
+        publishCommandExecutionStatus(
+            context: context,
+            statusText: statusText,
+            isStreaming: true
         )
     }
 
@@ -919,15 +919,15 @@ extension CodeRoverService {
             return
         }
 
-        publishCommandExecutionStatus(
-            context: context,
-            statusText: statusText,
-            isStreaming: state.phase == .running
-        )
         scheduleRealtimeHistoryCatchUp(
             threadId: context.threadId,
             itemId: context.itemId,
             previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
+        )
+        publishCommandExecutionStatus(
+            context: context,
+            statusText: statusText,
+            isStreaming: state.phase == .running
         )
     }
 
@@ -1740,6 +1740,11 @@ extension CodeRoverService {
         }
 
         if let itemId, !itemId.isEmpty {
+            scheduleRealtimeHistoryCatchUp(
+                threadId: threadId,
+                itemId: itemId,
+                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
+            )
             if isCompleted {
                 completeStreamingSystemItemMessage(
                     threadId: threadId,
@@ -1758,11 +1763,6 @@ extension CodeRoverService {
                     isStreaming: true
                 )
             }
-            scheduleRealtimeHistoryCatchUp(
-                threadId: threadId,
-                itemId: itemId,
-                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
-            )
             return true
         }
 

@@ -5,6 +5,9 @@ import com.coderover.android.data.model.ConnectionPhase
 import com.coderover.android.data.model.MessageKind
 import com.coderover.android.data.model.MessageRole
 import com.coderover.android.data.model.AppState
+import com.coderover.android.data.model.ThreadHistoryAnchor
+import com.coderover.android.data.model.ThreadHistorySegment
+import com.coderover.android.data.model.ThreadHistoryState
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.ThreadSyncState
 import org.junit.Assert.assertEquals
@@ -138,6 +141,82 @@ class ThreadSummaryRefreshTest {
                 latestItemId = "item-10",
                 incomingItemId = "item-42",
                 previousItemId = "item-12",
+            ),
+        )
+    }
+
+    @Test
+    fun resolveOlderHistoryLoadRequestBootstrapsWhenTimelineIsEmpty() {
+        val request = resolveOlderHistoryLoadRequest(
+            historyState = null,
+            localMessages = emptyList(),
+        )
+
+        assertTrue(request.shouldBootstrapTail)
+        assertNull(request.anchor)
+    }
+
+    @Test
+    fun resolveOlderHistoryLoadRequestUsesLocalFirstMessageWhenHistoryStateMissing() {
+        val localMessages = listOf(
+            ChatMessage(
+                threadId = "thread-1",
+                role = MessageRole.ASSISTANT,
+                kind = MessageKind.CHAT,
+                text = "first",
+                createdAt = 10L,
+                turnId = "turn-1",
+                itemId = "item-10",
+            ),
+            ChatMessage(
+                threadId = "thread-1",
+                role = MessageRole.ASSISTANT,
+                kind = MessageKind.CHAT,
+                text = "second",
+                createdAt = 20L,
+                turnId = "turn-1",
+                itemId = "item-20",
+            ),
+        )
+
+        val request = resolveOlderHistoryLoadRequest(
+            historyState = null,
+            localMessages = localMessages,
+        )
+
+        assertFalse(request.shouldBootstrapTail)
+        assertEquals("item-10", request.anchor?.itemId)
+        assertEquals(10L, request.anchor?.createdAt)
+    }
+
+    @Test
+    fun latestItemIdForRealtimeHistoryCatchUpPrefersLoadedHistoryAnchorOverProvisionalTail() {
+        val historyState = ThreadHistoryState(
+            segments = listOf(
+                ThreadHistorySegment(
+                    oldestAnchor = ThreadHistoryAnchor(itemId = "item-1", createdAt = 1L, turnId = "turn-1"),
+                    newestAnchor = ThreadHistoryAnchor(itemId = "item-10", createdAt = 10L, turnId = "turn-1"),
+                ),
+            ),
+            newestLoadedAnchor = ThreadHistoryAnchor(itemId = "item-10", createdAt = 10L, turnId = "turn-1"),
+        )
+        val localMessages = listOf(
+            ChatMessage(
+                threadId = "thread-1",
+                role = MessageRole.ASSISTANT,
+                kind = MessageKind.CHAT,
+                text = "provisional",
+                createdAt = 42L,
+                turnId = "turn-2",
+                itemId = "item-42",
+            ),
+        )
+
+        assertEquals(
+            "item-10",
+            latestItemIdForRealtimeHistoryCatchUp(
+                historyState = historyState,
+                localMessages = localMessages,
             ),
         )
     }

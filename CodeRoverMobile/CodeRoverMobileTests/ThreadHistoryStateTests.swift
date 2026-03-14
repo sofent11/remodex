@@ -1,4 +1,5 @@
 import XCTest
+import Observation
 @testable import CodeRoverMobile
 
 @MainActor
@@ -366,6 +367,80 @@ final class ThreadHistoryStateTests: XCTestCase {
 
         try await Task.sleep(nanoseconds: 250_000_000)
         XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-11")
+    }
+
+    func testLoadOlderHistoryBootstrapsTailWhenLocalTimelineIsEmpty() async throws {
+        let service = makeService()
+        let threadID = "thread-bootstrap-empty"
+        service.isConnected = true
+        service.isInitialized = true
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.messagesByThread[threadID] = []
+
+        let tailExpectation = expectation(description: "tail history bootstrap request")
+        service.requestTransportOverride = { method, params in
+            XCTAssertEqual(method, "thread/read")
+            let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+            XCTAssertEqual(historyObject["mode"]?.stringValue, "tail")
+            tailExpectation.fulfill()
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "Tail",
+                        messageRange: 11...20
+                    ),
+                    "historyWindow": .object([
+                        "oldestAnchor": self.makeAnchorObject(index: 11),
+                        "newestAnchor": self.makeAnchorObject(index: 20),
+                        "hasOlder": .bool(true),
+                        "hasNewer": .bool(false),
+                    ]),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        try await service.loadOlderThreadHistoryIfNeeded(threadId: threadID)
+
+        await fulfillment(of: [tailExpectation], timeout: 1.0)
+        XCTAssertEqual(service.messagesByThread[threadID]?.first?.itemId, "item-11")
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-20")
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestLoadedAnchor?.itemId, "item-20")
+    }
+
+    func testUpdateCurrentOutputPublishesInPlaceMessageMutation() {
+        let service = makeService()
+        let threadID = "thread-observation"
+
+        service.messagesByThread[threadID] = [
+            ChatMessage(
+                id: "assistant-1",
+                threadId: threadID,
+                role: .assistant,
+                text: "before",
+                createdAt: Date(timeIntervalSince1970: 1),
+                turnId: "turn-1",
+                itemId: "item-1",
+                isStreaming: true,
+                orderIndex: 1
+            ),
+        ]
+
+        var didInvalidate = false
+        withObservationTracking {
+            _ = service.messagesByThread[threadID]
+            _ = service.messageRevisionByThread[threadID]
+        } onChange: {
+            didInvalidate = true
+        }
+
+        service.messagesByThread[threadID]?[0].text = "after"
+        service.updateCurrentOutput(for: threadID)
+
+        XCTAssertEqual(service.messagesByThread[threadID]?.first?.text, "after")
+        XCTAssertTrue(didInvalidate)
     }
 
     private func makeService() -> CodeRoverService {

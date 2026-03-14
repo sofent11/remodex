@@ -1656,12 +1656,15 @@ class CodeRoverRepository(context: Context) {
     suspend fun loadOlderThreadHistory(threadId: String) {
         val currentState = state.value
         val historyState = currentState.historyStateByThread[threadId]
-        val requestAnchor = when {
-            historyState == null -> currentState.messagesByThread[threadId].orEmpty().firstOrNull()?.toHistoryAnchor()
-            historyState.gaps.isNotEmpty() -> historyState.segments.lastOrNull()?.oldestAnchor
-            historyState.hasOlderOnServer -> historyState.segments.firstOrNull()?.oldestAnchor
-            else -> null
-        } ?: return
+        val olderHistoryRequest = resolveOlderHistoryLoadRequest(
+            historyState = historyState,
+            localMessages = currentState.messagesByThread[threadId].orEmpty(),
+        )
+        if (olderHistoryRequest.shouldBootstrapTail) {
+            refreshThreadHistory(threadId, reason = "older-bootstrap-empty")
+            return
+        }
+        val requestAnchor = olderHistoryRequest.anchor ?: return
 
         updateState {
             copy(
@@ -1817,9 +1820,9 @@ class CodeRoverRepository(context: Context) {
         if (thread.provider.trim().lowercase() != "codex") {
             return false
         }
-        val latestItemId = normalizedIdentifier(
-            currentState.historyStateByThread[threadId]?.newestLoadedAnchor?.itemId
-                ?: currentState.messagesByThread[threadId].orEmpty().lastOrNull()?.itemId,
+        val latestItemId = latestItemIdForRealtimeHistoryCatchUp(
+            historyState = currentState.historyStateByThread[threadId],
+            localMessages = currentState.messagesByThread[threadId].orEmpty(),
         )
         return shouldRequestRealtimeHistoryCatchUp(
             latestItemId = latestItemId,
@@ -2876,6 +2879,11 @@ class CodeRoverRepository(context: Context) {
                 val resolvedParams = params ?: return
                 val threadId = params.resolveThreadId() ?: return
                 val itemId = resolvedParams.string("itemId") ?: resolvedParams.string("id")
+                scheduleRealtimeHistoryCatchUp(
+                    threadId = threadId,
+                    itemId = itemId,
+                    previousItemId = resolvedParams.resolvePreviousItemId(),
+                )
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.ASSISTANT,
@@ -2883,11 +2891,6 @@ class CodeRoverRepository(context: Context) {
                     textDelta = params.deltaText(),
                     turnId = params.resolveTurnId(),
                     itemId = itemId,
-                )
-                scheduleRealtimeHistoryCatchUp(
-                    threadId = threadId,
-                    itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
                 )
             }
 
@@ -2897,6 +2900,11 @@ class CodeRoverRepository(context: Context) {
                 val resolvedParams = params ?: return
                 val threadId = params.resolveThreadId() ?: return
                 val itemId = resolvedParams.string("itemId") ?: resolvedParams.string("id")
+                scheduleRealtimeHistoryCatchUp(
+                    threadId = threadId,
+                    itemId = itemId,
+                    previousItemId = resolvedParams.resolvePreviousItemId(),
+                )
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -2905,11 +2913,6 @@ class CodeRoverRepository(context: Context) {
                     turnId = params.resolveTurnId(),
                     itemId = itemId,
                 )
-                scheduleRealtimeHistoryCatchUp(
-                    threadId = threadId,
-                    itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
             }
 
             "item/plan/delta" -> {
@@ -2917,6 +2920,11 @@ class CodeRoverRepository(context: Context) {
                 val threadId = resolvedParams.resolveThreadId() ?: return
                 val planState = decodePlanState(resolvedParams)
                 val itemId = resolvedParams.resolveItemId()
+                scheduleRealtimeHistoryCatchUp(
+                    threadId = threadId,
+                    itemId = itemId,
+                    previousItemId = resolvedParams.resolvePreviousItemId(),
+                )
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -2928,11 +2936,6 @@ class CodeRoverRepository(context: Context) {
                     itemId = itemId,
                     planState = planState,
                 )
-                scheduleRealtimeHistoryCatchUp(
-                    threadId = threadId,
-                    itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
             }
 
             "item/fileChange/outputDelta",
@@ -2943,6 +2946,11 @@ class CodeRoverRepository(context: Context) {
                 val threadId = params.resolveThreadId() ?: return
                 val fileChanges = decodeFileChangeEntries(resolvedParams)
                 val itemId = resolvedParams.resolveItemId()
+                scheduleRealtimeHistoryCatchUp(
+                    threadId = threadId,
+                    itemId = itemId,
+                    previousItemId = resolvedParams.resolvePreviousItemId(),
+                )
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -2951,11 +2959,6 @@ class CodeRoverRepository(context: Context) {
                     turnId = params.resolveTurnId(),
                     itemId = itemId,
                     fileChanges = fileChanges,
-                )
-                scheduleRealtimeHistoryCatchUp(
-                    threadId = threadId,
-                    itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
                 )
             }
 
@@ -2969,6 +2972,11 @@ class CodeRoverRepository(context: Context) {
                 val threadId = resolvedParams.resolveThreadId() ?: return
                 val fileChanges = decodeFileChangeEntries(resolvedParams)
                 val itemId = resolvedParams.resolveItemId()
+                scheduleRealtimeHistoryCatchUp(
+                    threadId = threadId,
+                    itemId = itemId,
+                    previousItemId = resolvedParams.resolvePreviousItemId(),
+                )
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -2979,11 +2987,6 @@ class CodeRoverRepository(context: Context) {
                     fileChanges = fileChanges,
                     completed = method.endsWith("completed"),
                 )
-                scheduleRealtimeHistoryCatchUp(
-                    threadId = threadId,
-                    itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
             }
 
             "item/commandExecution/outputDelta",
@@ -2992,6 +2995,11 @@ class CodeRoverRepository(context: Context) {
                 val threadId = params.resolveThreadId() ?: return
                 val commandState = decodeCommandState(resolvedParams, completedFallback = false)
                 val itemId = resolvedParams.resolveItemId()
+                scheduleRealtimeHistoryCatchUp(
+                    threadId = threadId,
+                    itemId = itemId,
+                    previousItemId = resolvedParams.resolvePreviousItemId(),
+                )
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -3002,11 +3010,6 @@ class CodeRoverRepository(context: Context) {
                     commandState = commandState,
                     replaceText = true,
                 )
-                scheduleRealtimeHistoryCatchUp(
-                    threadId = threadId,
-                    itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
             }
 
             "item/completed",
@@ -3016,6 +3019,11 @@ class CodeRoverRepository(context: Context) {
                 val threadId = params.resolveThreadId() ?: return
                 val itemId = resolvedParams.resolveItemId()
                 val previousItemId = resolvedParams.resolvePreviousItemId()
+                scheduleRealtimeHistoryCatchUp(
+                    threadId = threadId,
+                    itemId = itemId,
+                    previousItemId = previousItemId,
+                )
                 when (resolvedParams.resolveMessageKind()) {
                     MessageKind.FILE_CHANGE -> {
                         upsertStreamingMessage(
@@ -3086,11 +3094,6 @@ class CodeRoverRepository(context: Context) {
                         }
                     }
                 }
-                scheduleRealtimeHistoryCatchUp(
-                    threadId = threadId,
-                    itemId = itemId,
-                    previousItemId = previousItemId,
-                )
             }
 
             "item/started",
@@ -4395,6 +4398,45 @@ internal fun shouldRequestRealtimeHistoryCatchUp(
         return false
     }
     return true
+}
+
+internal data class OlderHistoryLoadRequest(
+    val anchor: ThreadHistoryAnchor? = null,
+    val shouldBootstrapTail: Boolean = false,
+)
+
+internal fun resolveOlderHistoryLoadRequest(
+    historyState: ThreadHistoryState?,
+    localMessages: List<ChatMessage>,
+): OlderHistoryLoadRequest {
+    if (historyState == null) {
+        val anchor = localMessages.firstOrNull()?.toHistoryAnchor()
+        return if (anchor != null) {
+            OlderHistoryLoadRequest(anchor = anchor)
+        } else {
+            OlderHistoryLoadRequest(shouldBootstrapTail = true)
+        }
+    }
+
+    if (historyState.gaps.isNotEmpty()) {
+        return OlderHistoryLoadRequest(anchor = historyState.segments.lastOrNull()?.oldestAnchor)
+    }
+
+    if (historyState.hasOlderOnServer) {
+        return OlderHistoryLoadRequest(anchor = historyState.segments.firstOrNull()?.oldestAnchor)
+    }
+
+    return OlderHistoryLoadRequest()
+}
+
+internal fun latestItemIdForRealtimeHistoryCatchUp(
+    historyState: ThreadHistoryState?,
+    localMessages: List<ChatMessage>,
+): String? {
+    return normalizedIdentifier(
+        historyState?.newestLoadedAnchor?.itemId
+            ?: localMessages.lastOrNull()?.itemId,
+    )
 }
 
 private fun normalizeMethodToken(value: String): String {

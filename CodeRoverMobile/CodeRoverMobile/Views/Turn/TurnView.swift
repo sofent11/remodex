@@ -31,8 +31,8 @@ struct TurnView: View {
         let showsGitControls = coderover.isConnected && gitWorkingDirectory != nil
         let latestTurnTerminalState = coderover.latestTurnTerminalState(for: thread.id)
         let stoppedTurnIDs = coderover.stoppedTurnIDs(for: thread.id)
-        let rawMessages = coderover.messages(for: thread.id)
-        let timelineChangeToken = coderover.messageRevision(for: thread.id)
+        let rawMessages = coderover.messagesByThread[thread.id] ?? []
+        let timelineChangeToken = coderover.messageRevisionByThread[thread.id] ?? 0
         let historyState = coderover.historyStateByThread[thread.id]
         let hasOlderHistory = !(historyState?.gaps.isEmpty ?? true) || (historyState?.hasOlderOnServer ?? false)
         let projectedMessages = TurnTimelineReducer.project(messages: rawMessages).messages
