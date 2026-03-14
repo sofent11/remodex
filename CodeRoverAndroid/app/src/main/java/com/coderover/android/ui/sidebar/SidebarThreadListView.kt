@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.coderover.android.data.model.ThreadSummary
+import com.coderover.android.data.model.ThreadRunBadgeState
 import com.coderover.android.data.model.ThreadSyncState
 import com.coderover.android.ui.shared.HapticFeedback
 import com.coderover.android.ui.shared.relativeTimeLabel
@@ -60,7 +61,7 @@ import com.coderover.android.ui.turn.TurnSessionDiffTotals
 fun SidebarThreadListView(
     groups: List<SidebarThreadGroup>,
     selectedThreadId: String?,
-    runningThreadIds: Set<String>,
+    runBadgeStateByThreadId: Map<String, ThreadRunBadgeState>,
     diffTotalsByThreadId: Map<String, TurnSessionDiffTotals>,
     collapsedProjectGroupIds: Set<String>,
     onToggleProjectGroupCollapsed: (String) -> Unit,
@@ -124,7 +125,7 @@ fun SidebarThreadListView(
                                 SidebarThreadRowView(
                                     thread = thread,
                                     isSelected = selectedThreadId == thread.id,
-                                    isRunning = runningThreadIds.contains(thread.id),
+                                    runBadgeState = runBadgeStateByThreadId[thread.id],
                                     diffTotals = diffTotalsByThreadId[thread.id],
                                     isMenuExpanded = menuThreadId == thread.id,
                                     onSelect = { onSelectThread(thread) },
@@ -159,7 +160,7 @@ fun SidebarThreadListView(
                                 SidebarThreadRowView(
                                     thread = thread,
                                     isSelected = selectedThreadId == thread.id,
-                                    isRunning = runningThreadIds.contains(thread.id),
+                                    runBadgeState = runBadgeStateByThreadId[thread.id],
                                     diffTotals = diffTotalsByThreadId[thread.id],
                                     isMenuExpanded = menuThreadId == thread.id,
                                     onSelect = { onSelectThread(thread) },
@@ -301,7 +302,7 @@ private fun SidebarArchivedGroupHeader(
 private fun SidebarThreadRowView(
     thread: ThreadSummary,
     isSelected: Boolean,
-    isRunning: Boolean,
+    runBadgeState: ThreadRunBadgeState?,
     diffTotals: TurnSessionDiffTotals?,
     isMenuExpanded: Boolean,
     onSelect: () -> Unit,
@@ -351,18 +352,8 @@ private fun SidebarThreadRowView(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (isRunning) {
-                        Text(
-                            text = "RUN",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 10.sp,
-                            ),
-                            color = PlanAccent,
-                            modifier = Modifier
-                                .background(PlanAccent.copy(alpha = 0.1f), RoundedCornerShape(999.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
+                    if (runBadgeState != null) {
+                        SidebarThreadRunBadgeView(state = runBadgeState)
                     }
                     Text(
                         text = thread.displayTitle,

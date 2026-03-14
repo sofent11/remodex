@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ThreadSummary
+import com.coderover.android.data.model.ThreadRunBadgeState
 import com.coderover.android.data.model.ThreadSyncState
 import com.coderover.android.ui.sidebar.SidebarFloatingSettingsButton
 import com.coderover.android.ui.sidebar.SidebarHeaderView
@@ -62,6 +63,19 @@ fun SidebarScreen(
             .mapNotNull { it.normalizedProjectPath }
             .distinct()
             .sorted()
+    }
+
+
+    val runBadgeStateByThreadId = remember(state.runningThreadIds, state.activeTurnIdByThread, state.readyThreadIds, state.failedThreadIds) {
+        state.threads.associate { thread ->
+            val badgeState = when {
+                state.runningThreadIds.contains(thread.id) || state.activeTurnIdByThread.containsKey(thread.id) -> ThreadRunBadgeState.RUNNING
+                state.failedThreadIds.contains(thread.id) -> ThreadRunBadgeState.FAILED
+                state.readyThreadIds.contains(thread.id) -> ThreadRunBadgeState.READY
+                else -> null
+            }
+            thread.id to badgeState
+        }.filterValues { it != null }.mapValues { it.value!! }
     }
 
     val diffTotalsByThreadId = remember(state.messagesByThread) {
@@ -105,7 +119,7 @@ fun SidebarScreen(
             SidebarThreadListView(
                 groups = groups,
                 selectedThreadId = state.selectedThreadId,
-                runningThreadIds = state.runningThreadIds,
+                runBadgeStateByThreadId = runBadgeStateByThreadId,
                 diffTotalsByThreadId = diffTotalsByThreadId,
                 collapsedProjectGroupIds = state.collapsedProjectGroupIds,
                 onToggleProjectGroupCollapsed = onToggleProjectGroupCollapsed,

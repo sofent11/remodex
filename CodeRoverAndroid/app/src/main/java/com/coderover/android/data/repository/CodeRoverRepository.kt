@@ -35,6 +35,7 @@ import com.coderover.android.data.model.StructuredUserInputRequest
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.ThreadSyncState
 import com.coderover.android.data.model.TrustedMacRecord
+import com.coderover.android.data.model.ThreadRunBadgeState
 import com.coderover.android.data.model.TrustedMacRegistry
 import com.coderover.android.data.model.RuntimeProvider
 import com.coderover.android.data.model.array
@@ -449,7 +450,7 @@ class CodeRoverRepository(context: Context) {
 
     fun selectThread(threadId: String) {
         val thread = state.value.threads.firstOrNull { it.id == threadId }
-        updateState { copy(selectedThreadId = threadId, pendingApproval = null) }
+        updateState { copy(selectedThreadId = threadId, pendingApproval = null, readyThreadIds = readyThreadIds - threadId, failedThreadIds = failedThreadIds - threadId) }
         scope.launch {
             syncRuntimeSelectionContext(thread?.provider ?: state.value.selectedProviderId, refreshModels = state.value.isConnected)
         }
@@ -1316,6 +1317,8 @@ class CodeRoverRepository(context: Context) {
                     } else {
                         runningThreadIds + threadId
                     },
+                    readyThreadIds = readyThreadIds - threadId,
+                    failedThreadIds = failedThreadIds - threadId,
                 )
             }
         } else if (activeTurnId != null) {
@@ -1323,6 +1326,8 @@ class CodeRoverRepository(context: Context) {
                 copy(
                     activeTurnIdByThread = activeTurnIdByThread + (threadId to activeTurnId),
                     runningThreadIds = runningThreadIds + threadId,
+                    readyThreadIds = readyThreadIds - threadId,
+                    failedThreadIds = failedThreadIds - threadId,
                 )
             }
         }
@@ -2282,6 +2287,8 @@ class CodeRoverRepository(context: Context) {
                 updateState {
                     copy(
                         runningThreadIds = runningThreadIds + threadId,
+                        readyThreadIds = readyThreadIds - threadId,
+                        failedThreadIds = failedThreadIds - threadId,
                         activeTurnIdByThread = if (turnId.isNullOrBlank()) {
                             activeTurnIdByThread
                         } else {
@@ -2322,10 +2329,18 @@ class CodeRoverRepository(context: Context) {
                 val resolvedParams = params ?: return
                 val threadId = params.resolveThreadId() ?: return
                 val turnId = params.resolveTurnId()
+
+                val status = params.string("status") ?: params["turn"]?.jsonObjectOrNull()?.string("status")
+                val isFailed = status?.lowercase()?.contains("fail") == true || status?.lowercase()?.contains("error") == true || params.string("errorMessage") != null || params["turn"]?.jsonObjectOrNull()?.get("error") != null
+                val isStopped = status?.lowercase()?.contains("cancel") == true || status?.lowercase()?.contains("abort") == true || status?.lowercase()?.contains("interrupt") == true || status?.lowercase()?.contains("stop") == true
+                val terminalState = if (isFailed) ThreadRunBadgeState.FAILED else if (isStopped) null else ThreadRunBadgeState.READY
+
                 updateState {
                     copy(
                         runningThreadIds = runningThreadIds - threadId,
                         activeTurnIdByThread = activeTurnIdByThread - threadId,
+                        readyThreadIds = if (terminalState == ThreadRunBadgeState.READY && selectedThreadId != threadId) readyThreadIds + threadId else readyThreadIds,
+                        failedThreadIds = if (terminalState == ThreadRunBadgeState.FAILED && selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds
                     )
                 }
                 if (turnId != null) {
@@ -2541,6 +2556,7 @@ class CodeRoverRepository(context: Context) {
                     copy(
                         runningThreadIds = runningThreadIds - threadId,
                         activeTurnIdByThread = activeTurnIdByThread - threadId,
+                        failedThreadIds = if (selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds
                     )
                 }
                 checkAndSendNextQueuedDraft(threadId)
