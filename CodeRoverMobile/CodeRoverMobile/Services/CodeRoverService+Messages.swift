@@ -9,12 +9,14 @@ import Foundation
 extension CodeRoverService {
     // Returns the full persisted timeline for a single thread.
     func messages(for threadId: String) -> [ChatMessage] {
-        messagesByThread[threadId] ?? []
+        let dict = messagesByThread
+        return dict[threadId] ?? []
     }
 
     // Returns a lightweight per-thread revision token for any message timeline mutation.
     func messageRevision(for threadId: String) -> Int {
-        messageRevisionByThread[threadId] ?? 0
+        let dict = messageRevisionByThread
+        return dict[threadId] ?? 0
     }
 
     // Refreshes the derived output cache and bumps the thread timeline revision.
@@ -2230,7 +2232,7 @@ private extension CodeRoverService {
         }
 
         var nextMessagesByThread = messagesByThread
-        nextMessagesByThread[threadId] = threadMessages
+        nextMessagesByThread[threadId] = Array(threadMessages)
         messagesByThread = nextMessagesByThread
     }
 

@@ -41,7 +41,8 @@ extension CodeRoverService {
         }
 
         markThreadAsRunning(context.threadId)
-        guard handleRealtimeHistoryEvent(
+        // Apply streaming delta immediately; history catch-up runs in background.
+        handleRealtimeHistoryEvent(
             threadId: context.threadId,
             turnId: context.identity.turnId ?? activeTurnIdByThread[context.threadId],
             itemId: context.identity.itemId,
@@ -57,7 +58,7 @@ extension CodeRoverService {
                 from: paramsObject,
                 eventObject: eventObject
             )
-        ) else { return }
+        )
         appendAssistantDelta(
             threadId: context.threadId,
             turnId: turnId,
@@ -85,7 +86,7 @@ extension CodeRoverService {
                 paramsObject: paramsObject,
                 eventObject: eventObject
             ) else { return }
-            guard handleRealtimeHistoryEvent(
+            handleRealtimeHistoryEvent(
                 threadId: context.threadId,
                 turnId: context.identity.turnId ?? activeTurnIdByThread[context.threadId],
                 itemId: context.identity.itemId,
@@ -101,7 +102,7 @@ extension CodeRoverService {
                     from: paramsObject,
                     eventObject: eventObject
                 )
-            ) else { return }
+            )
             completeAssistantMessage(
                 threadId: context.threadId,
                 turnId: context.identity.turnId,
@@ -136,7 +137,7 @@ extension CodeRoverService {
             eventObject: eventObject,
             itemObject: itemObject
         ) else { return }
-        guard handleRealtimeHistoryEvent(
+        handleRealtimeHistoryEvent(
             threadId: context.threadId,
             turnId: context.identity.turnId ?? activeTurnIdByThread[context.threadId],
             itemId: context.identity.itemId,
@@ -155,7 +156,7 @@ extension CodeRoverService {
                 eventObject: eventObject,
                 itemObject: itemObject
             )
-        ) else { return }
+        )
         completeAssistantMessage(
             threadId: context.threadId,
             turnId: context.identity.turnId,

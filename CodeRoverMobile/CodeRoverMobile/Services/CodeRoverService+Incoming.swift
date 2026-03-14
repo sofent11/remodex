@@ -693,12 +693,12 @@ extension CodeRoverService {
 
         let itemId = extractItemID(from: paramsObject, eventObject: eventObject)
         if let itemId, !itemId.isEmpty {
-            guard handleRealtimeHistoryEvent(
+            handleRealtimeHistoryEvent(
                 threadId: threadId,
                 itemId: itemId,
                 paramsObject: paramsObject,
                 eventObject: eventObject
-            ) else { return }
+            )
             appendStreamingSystemItemDelta(
                 threadId: threadId,
                 turnId: resolvedTurnId,
@@ -746,12 +746,12 @@ extension CodeRoverService {
 
         let itemId = extractItemID(from: paramsObject, eventObject: eventObject)
         if let itemId, !itemId.isEmpty {
-            guard handleRealtimeHistoryEvent(
+            handleRealtimeHistoryEvent(
                 threadId: threadId,
                 itemId: itemId,
                 paramsObject: paramsObject,
                 eventObject: eventObject
-            ) else { return }
+            )
             appendStreamingSystemItemDelta(
                 threadId: threadId,
                 turnId: resolvedTurnId,
@@ -810,13 +810,13 @@ extension CodeRoverService {
 
         let itemId = extractItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
         if let itemId, !itemId.isEmpty {
-            guard handleRealtimeHistoryEvent(
+            handleRealtimeHistoryEvent(
                 threadId: threadId,
                 itemId: itemId,
                 paramsObject: paramsObject,
                 eventObject: eventObject,
                 itemObject: itemObject
-            ) else { return }
+            )
             appendStreamingSystemItemDelta(
                 threadId: threadId,
                 turnId: resolvedTurnId,
@@ -872,13 +872,13 @@ extension CodeRoverService {
 
         let statusText = decodeCommandExecutionStatusText(payloadObject, isCompleted: false)
         appendCommandExecutionOutputToDetails(itemId: context.itemId, paramsObject: paramsObject, eventObject: eventObject)
-        guard handleRealtimeHistoryEvent(
+        handleRealtimeHistoryEvent(
             threadId: context.threadId,
             itemId: context.itemId,
             paramsObject: paramsObject,
             eventObject: eventObject,
             itemObject: itemObject
-        ) else { return }
+        )
         publishCommandExecutionStatus(
             context: context,
             statusText: statusText,
@@ -925,12 +925,12 @@ extension CodeRoverService {
             return
         }
 
-        guard handleRealtimeHistoryEvent(
+        handleRealtimeHistoryEvent(
             threadId: context.threadId,
             itemId: context.itemId,
             paramsObject: paramsObject,
             eventObject: eventObject
-        ) else { return }
+        )
         publishCommandExecutionStatus(
             context: context,
             statusText: statusText,
@@ -1747,13 +1747,13 @@ extension CodeRoverService {
         }
 
         if let itemId, !itemId.isEmpty {
-            guard handleRealtimeHistoryEvent(
+            handleRealtimeHistoryEvent(
                 threadId: threadId,
                 itemId: itemId,
                 paramsObject: paramsObject,
                 eventObject: eventObject,
                 itemObject: itemObject
-            ) else { return false }
+            )
             if isCompleted {
                 completeStreamingSystemItemMessage(
                     threadId: threadId,
