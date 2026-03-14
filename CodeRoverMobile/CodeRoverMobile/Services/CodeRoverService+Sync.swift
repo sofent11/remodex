@@ -474,10 +474,7 @@ extension CodeRoverService {
     func syncActiveThreadState(threadId: String) async {
         let wasRunning = threadHasActiveOrRunningTurn(threadId)
         if wasRunning {
-            let didRefresh = await refreshInFlightTurnState(threadId: threadId)
-            guard !didRefresh || !threadHasActiveOrRunningTurn(threadId) else {
-                return
-            }
+            _ = await refreshInFlightTurnState(threadId: threadId)
         }
 
         await syncThreadHistory(threadId: threadId, force: true)

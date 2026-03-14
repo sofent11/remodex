@@ -35,14 +35,7 @@ struct TurnView: View {
         let timelineChangeToken = coderover.messageRevision(for: thread.id)
         let historyState = coderover.historyStateByThread[thread.id]
         let hasOlderHistory = !(historyState?.gaps.isEmpty ?? true) || (historyState?.hasOlderOnServer ?? false)
-        let projectedMessages: [ChatMessage] = {
-            viewModel.updateProjectedTimeline(
-                threadID: thread.id,
-                messages: rawMessages,
-                changeToken: timelineChangeToken
-            )
-            return viewModel.projectedMessages
-        }()
+        let projectedMessages = TurnTimelineReducer.project(messages: rawMessages).messages
         let assistantRevertStatesByMessageID = projectedMessages.reduce(into: [String: AssistantRevertPresentation]()) {
             partialResult, message in
             if let presentation = coderover.assistantRevertPresentation(

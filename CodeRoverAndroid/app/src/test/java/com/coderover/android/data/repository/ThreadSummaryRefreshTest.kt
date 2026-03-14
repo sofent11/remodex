@@ -1,11 +1,14 @@
 package com.coderover.android.data.repository
 
 import com.coderover.android.data.model.ChatMessage
+import com.coderover.android.data.model.ConnectionPhase
 import com.coderover.android.data.model.MessageKind
 import com.coderover.android.data.model.MessageRole
+import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.ThreadSyncState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -91,5 +94,25 @@ class ThreadSummaryRefreshTest {
         assertEquals("Hello from another device", refreshed.first().preview)
         assertEquals(ThreadSyncState.LIVE, refreshed.first().syncState)
         assertTrue((refreshed.first().updatedAt ?: 0L) >= 300L)
+    }
+
+    @Test
+    fun selectedCodexThreadIdForTailSyncRequiresConnectedRunningSelectedCodexThread() {
+        val runningCodexThread = ThreadSummary(id = "thread-running", provider = "codex")
+        val connectedState = AppState(
+            connectionPhase = ConnectionPhase.CONNECTED,
+            threads = listOf(runningCodexThread),
+            selectedThreadId = runningCodexThread.id,
+            runningThreadIds = setOf(runningCodexThread.id),
+        )
+
+        assertEquals("thread-running", connectedState.selectedCodexThreadIdForTailSync())
+        assertNull(connectedState.copy(connectionPhase = ConnectionPhase.OFFLINE).selectedCodexThreadIdForTailSync())
+        assertNull(connectedState.copy(runningThreadIds = emptySet()).selectedCodexThreadIdForTailSync())
+        assertNull(
+            connectedState.copy(
+                threads = listOf(runningCodexThread.copy(provider = "claude")),
+            ).selectedCodexThreadIdForTailSync(),
+        )
     }
 }

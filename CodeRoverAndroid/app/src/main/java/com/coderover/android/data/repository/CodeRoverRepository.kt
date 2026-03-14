@@ -86,6 +86,7 @@ import kotlinx.serialization.json.contentOrNull
 class CodeRoverRepository(context: Context) {
     private companion object {
         const val TAG = "CodeRoverRepo"
+        const val ACTIVE_THREAD_TAIL_SYNC_INTERVAL_MS = 2_000L
     }
 
     private data class ThreadListPage(
@@ -102,10 +103,13 @@ class CodeRoverRepository(context: Context) {
     private val prefs = UserPreferencesStore(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val clientMutex = Mutex()
+    private val threadHistoryRefreshMutex = Mutex()
     private val orderCounter = AtomicInteger(0)
     private val connectionEpoch = AtomicLong(0)
     private val isConnectInFlight = AtomicBoolean(false)
     private val streamingMessageIdsByKey = mutableMapOf<String, String>()
+    private val threadHistoryRefreshInFlight = mutableSetOf<String>()
+    private val threadHistoryRefreshPending = mutableSetOf<String>()
     private var activeThreadListNextCursor: JsonElement? = JsonNull
     private var activeThreadListHasMore = false
     private var client: SecureBridgeClient? = null
@@ -163,6 +167,17 @@ class CodeRoverRepository(context: Context) {
             ),
             secureMacFingerprint = activePairing?.macIdentityPublicKey?.let(SecureCrypto::fingerprint),
         )
+        scope.launch {
+            while (true) {
+                delay(ACTIVE_THREAD_TAIL_SYNC_INTERVAL_MS)
+                val threadId = state.value.selectedCodexThreadIdForTailSync() ?: continue
+                runCatching {
+                    refreshThreadHistory(threadId, reason = "active-tail-poll")
+                }.onFailure { failure ->
+                    Log.w(TAG, "active thread tail sync failed threadId=$threadId", failure)
+                }
+            }
+        }
     }
 
     fun toggleProjectGroupCollapsed(projectId: String) {
@@ -366,7 +381,7 @@ class CodeRoverRepository(context: Context) {
                         }
                         state.value.selectedThreadId?.let { threadId ->
                             runCatching {
-                                loadThreadHistory(threadId)
+                                refreshThreadHistory(threadId, reason = "initial-connect")
                             }.onFailure { failure ->
                                 Log.w(TAG, "initial thread/read failed after connect epoch=$epoch threadId=$threadId", failure)
                                 scheduleThreadHistoryRetry(threadId, "initial-connect")
@@ -473,7 +488,7 @@ class CodeRoverRepository(context: Context) {
             syncRuntimeSelectionContext(thread?.provider ?: state.value.selectedProviderId, refreshModels = state.value.isConnected)
         }
         scope.launch {
-            loadThreadHistory(threadId)
+            refreshThreadHistory(threadId, reason = "select-thread")
         }
         scope.launch {
             refreshContextWindowUsage(threadId)
@@ -926,7 +941,7 @@ class CodeRoverRepository(context: Context) {
             runCatching<Unit> {
                 listThreads(updatePhase = false)
                 state.value.selectedThreadId?.let { threadId ->
-                    loadThreadHistory(threadId)
+                    refreshThreadHistory(threadId, reason = "manual-refresh")
                 }
             }.onFailure { failure ->
                 updateError(failure.message ?: "Unable to refresh chats.")
@@ -1492,7 +1507,7 @@ class CodeRoverRepository(context: Context) {
             )?.jsonObjectOrNull()
             resumeResult?.threadPayload()
         }.getOrNull()
-        val historyResult = if (resumedThreadObject == null) {
+        val historyResult = try {
             activeClient().sendRequest(
                 method = "thread/read",
                 params = buildJsonObject(
@@ -1503,19 +1518,24 @@ class CodeRoverRepository(context: Context) {
                     ),
                 ),
             )?.jsonObjectOrNull()
-        } else {
+        } catch (failure: Throwable) {
+            if (resumedThreadObject == null) {
+                throw failure
+            }
+            Log.w(TAG, "thread/read tail refresh failed; falling back to resume snapshot threadId=$threadId", failure)
             null
         }
-        val threadObject = resumedThreadObject ?: historyResult?.threadPayload() ?: return
-        ThreadSummary.fromJson(threadObject)?.let { thread ->
+        val historyThreadObject = historyResult?.threadPayload() ?: resumedThreadObject ?: return
+        val summaryThreadObject = resumedThreadObject ?: historyThreadObject
+        ThreadSummary.fromJson(summaryThreadObject)?.let { thread ->
             updateState {
                 copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
             }
         }
-        extractContextWindowUsageIfAvailable(threadId, threadObject)
-        val history = decodeMessagesFromThreadRead(threadId, threadObject)
+        extractContextWindowUsageIfAvailable(threadId, historyThreadObject)
+        val history = decodeMessagesFromThreadRead(threadId, historyThreadObject)
         val historyWindow = historyResult?.get("historyWindow")?.jsonObjectOrNull()
-        val activeTurnId = resolveActiveTurnId(threadObject)
+        val activeTurnId = resolveActiveTurnId(resumedThreadObject ?: historyThreadObject)
         if (history.isNotEmpty()) {
             val existingMessages = state.value.messagesByThread[threadId].orEmpty()
             val mergedHistory = mergeHistoryMessages(existingMessages, history)
@@ -2659,6 +2679,15 @@ class CodeRoverRepository(context: Context) {
                         completed = true,
                     )
                 }
+                if (state.value.selectedThreadId == threadId) {
+                    scope.launch {
+                        runCatching {
+                            refreshThreadHistory(threadId, reason = "turn-completed")
+                        }.onFailure { failure ->
+                            Log.w(TAG, "post-completion tail refresh failed threadId=$threadId", failure)
+                        }
+                    }
+                }
                 checkAndSendNextQueuedDraft(threadId)
             }
 
@@ -3642,9 +3671,70 @@ class CodeRoverRepository(context: Context) {
                 return@launch
             }
             runCatching {
-                loadThreadHistory(threadId)
+                refreshThreadHistory(threadId, reason = "retry:$reason")
             }.onFailure { failure ->
                 Log.w(TAG, "thread/read retry failed reason=$reason threadId=$threadId", failure)
+            }
+        }
+    }
+
+    private suspend fun refreshThreadHistory(threadId: String, reason: String) {
+        if (!beginThreadHistoryRefresh(threadId)) {
+            return
+        }
+        try {
+            loadThreadHistory(threadId)
+        } catch (failure: Throwable) {
+            Log.w(TAG, "thread/read refresh failed reason=$reason threadId=$threadId", failure)
+            throw failure
+        } finally {
+            endThreadHistoryRefresh(threadId)
+        }
+    }
+
+    private suspend fun beginThreadHistoryRefresh(threadId: String): Boolean {
+        val didStart = threadHistoryRefreshMutex.withLock {
+            if (threadHistoryRefreshInFlight.contains(threadId)) {
+                threadHistoryRefreshPending += threadId
+                false
+            } else {
+                threadHistoryRefreshInFlight += threadId
+                true
+            }
+        }
+        if (!didStart) {
+            return false
+        }
+        updateState {
+            copy(
+                historyStateByThread = historyStateByThread + (
+                    threadId to ((historyStateByThread[threadId] ?: ThreadHistoryState()).copy(isTailRefreshing = true))
+                ),
+            )
+        }
+        return true
+    }
+
+    private suspend fun endThreadHistoryRefresh(threadId: String) {
+        val shouldRerun = threadHistoryRefreshMutex.withLock {
+            threadHistoryRefreshInFlight.remove(threadId)
+            threadHistoryRefreshPending.remove(threadId)
+        }
+        updateState {
+            val currentHistoryState = historyStateByThread[threadId] ?: return@updateState this
+            copy(
+                historyStateByThread = historyStateByThread + (
+                    threadId to currentHistoryState.copy(isTailRefreshing = false)
+                ),
+            )
+        }
+        if (shouldRerun) {
+            scope.launch {
+                runCatching {
+                    refreshThreadHistory(threadId, reason = "coalesced")
+                }.onFailure { failure ->
+                    Log.w(TAG, "coalesced thread/read refresh failed threadId=$threadId", failure)
+                }
             }
         }
     }
@@ -4035,6 +4125,18 @@ private fun normalizeMethodToken(value: String): String {
         .lowercase()
         .replace("_", "")
         .replace("-", "")
+}
+
+internal fun AppState.selectedCodexThreadIdForTailSync(): String? {
+    if (!isConnected) {
+        return null
+    }
+    val thread = selectedThread ?: return null
+    if (thread.provider.trim().lowercase() != "codex") {
+        return null
+    }
+    val threadId = selectedThreadId ?: return null
+    return threadId.takeIf { threadHasActiveOrRunningTurn(it) }
 }
 
 private fun AppState.threadHasActiveOrRunningTurn(threadId: String): Boolean {

@@ -206,7 +206,8 @@ extension CodeRoverService {
 
     // Loads the latest thread/read history window once per thread and keeps older ranges lazy.
     func loadThreadHistoryIfNeeded(threadId: String, forceRefresh: Bool = false) async throws {
-        if !forceRefresh, hydratedThreadIDs.contains(threadId) {
+        let hasLocalMessages = !(messagesByThread[threadId] ?? []).isEmpty
+        if !forceRefresh, hydratedThreadIDs.contains(threadId), hasLocalMessages {
             return
         }
 
@@ -249,15 +250,6 @@ extension CodeRoverService {
 
         applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
 
-        // A turn may have started while the thread/read request was in flight.
-        // Merging stale history would overwrite live streaming text and clear
-        // isStreaming flags, causing messages to flicker (disappear then reappear).
-        // Skip the merge and let the active turn's streaming deltas be authoritative.
-        if threadHasActiveOrRunningTurn(threadId) {
-            hydratedThreadIDs.insert(threadId)
-            return
-        }
-
         extractContextWindowUsageIfAvailable(threadId: threadId, threadObject: threadObject)
 
         let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
@@ -269,10 +261,6 @@ extension CodeRoverService {
             let merged = await Task.detached {
                 Self.mergeHistoryMessages(existingMessages, historyMessages, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningIDs)
             }.value
-            guard !threadHasActiveOrRunningTurn(threadId) else {
-                hydratedThreadIDs.insert(threadId)
-                return
-            }
             messagesByThread[threadId] = merged
             persistMessages()
         }

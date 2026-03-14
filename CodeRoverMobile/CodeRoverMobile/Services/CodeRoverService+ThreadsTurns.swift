@@ -997,7 +997,8 @@ extension CodeRoverService {
             return nil
         }
 
-        if !force, resumedThreadIDs.contains(threadId) {
+        let hasLocalMessages = !(messagesByThread[threadId] ?? []).isEmpty
+        if !force, resumedThreadIDs.contains(threadId), hasLocalMessages {
             return threads.first(where: { $0.id == threadId })
         }
 
@@ -1031,19 +1032,15 @@ extension CodeRoverService {
                     let merged = await Task.detached {
                         Self.mergeHistoryMessages(existingMessages, historyMessages, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningIDs)
                     }.value
-                    // If a turn started while merging, keep live streaming data.
-                    if !threadHasActiveOrRunningTurn(threadId) || existingMessages.isEmpty {
-                        messagesByThread[threadId] = merged
-                        persistMessages()
-                        updateCurrentOutput(for: threadId)
-                    }
+                    messagesByThread[threadId] = merged
+                    persistMessages()
+                    updateCurrentOutput(for: threadId)
                 }
             }
         } else if let index = threads.firstIndex(where: { $0.id == threadId }) {
             threads[index].syncState = .live
         }
 
-        hydratedThreadIDs.insert(threadId)
         resumedThreadIDs.insert(threadId)
         return resumedThread
     }

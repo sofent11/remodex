@@ -277,8 +277,6 @@ final class TurnViewModel {
             && !isSwitchingGitBranch
     }
 
-    // Cached projected timeline to avoid re-running TurnTimelineReducer on every SwiftUI evaluation.
-    var projectedMessages: [ChatMessage] = []
     @ObservationIgnored private var threadActivationTask: Task<Void, Never>?
 
     @ObservationIgnored var fileAutocompleteDebounceTask: Task<Void, Never>?
@@ -295,18 +293,6 @@ final class TurnViewModel {
     private let gitStatusRefreshDebounceNanoseconds: UInt64 = 350_000_000
 
     init() {}
-
-    // MARK: - Cached Timeline Projection
-
-    @ObservationIgnored private var lastProjectedThreadID: String?
-    @ObservationIgnored private var lastProjectionChangeToken: Int = -1
-
-    func updateProjectedTimeline(threadID: String, messages: [ChatMessage], changeToken: Int) {
-        guard threadID != lastProjectedThreadID || changeToken != lastProjectionChangeToken else { return }
-        lastProjectedThreadID = threadID
-        lastProjectionChangeToken = changeToken
-        projectedMessages = TurnTimelineReducer.project(messages: messages).messages
-    }
 
     // MARK: - Cancellable Thread Activation
 
